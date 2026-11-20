@@ -1,0 +1,11 @@
+services:
+  clipper:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      CLIPPER_BUFFER_SECONDS: "180"
+      CLIPPER_HYPE_MULTIPLIER: "3"
+    restart: unless-stopped

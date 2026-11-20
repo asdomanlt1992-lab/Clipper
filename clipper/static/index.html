@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clipper</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e8ee; --muted: #8b93a7;
+    --accent: #8b5cf6; --accent2: #22d3ee; --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 10px var(--bad); }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 26px 0 10px; }
+  form.add { display: flex; flex-wrap: wrap; gap: 8px; }
+  input, select, button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line);
+                          border-radius: 8px; padding: 8px 10px; }
+  input[type=text] { flex: 1 1 320px; min-width: 0; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.clip { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .streams { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+  .card .top { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+  .card .name { font-weight: 700; font-size: 16px; overflow-wrap: anywhere; }
+  .card .url { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+  .pill.live { color: var(--ok); border-color: var(--ok); }
+  .pill.off { color: var(--warn); border-color: var(--warn); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+  .stat { background: var(--bg); border-radius: 8px; padding: 8px; }
+  .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 11px; }
+  canvas { width: 100%; height: 60px; display: block; background: var(--bg); border-radius: 8px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  .row input[type=range] { flex: 1; padding: 0; }
+  .err { color: var(--warn); font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
+  .events { font-size: 12px; color: var(--muted); margin-top: 8px; max-height: 80px; overflow: auto; }
+  .clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .clipcard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .clipcard video, .clipcard .ph { width: 100%; aspect-ratio: 16/9; background: #000; display: block; }
+  .clipcard .ph { display: grid; place-items: center; color: var(--muted); }
+  .clipcard .meta { padding: 10px 12px; }
+  .clipcard .title { font-weight: 600; overflow-wrap: anywhere; }
+  .clipcard .sub { color: var(--muted); font-size: 12px; }
+  .tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 6px; }
+  .tag.auto { background: var(--accent); color: #fff; }
+  .tag.manual { background: var(--accent2); color: #000; }
+  .empty { color: var(--muted); padding: 20px; border: 1px dashed var(--line); border-radius: 12px; text-align: center; }
+  a { color: var(--accent2); }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel);
+           border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; display: none; max-width: calc(100% - 32px); }
+</style>
+</head>
+<body>
+<header><div class="dot"></div><h1>Clipper</h1><span style="color:var(--muted)">live stream auto-highlights</span></header>
+<main>
+  <form class="add" id="add">
+    <input type="text" id="url" placeholder="https://twitch.tv/channel  (or YouTube / Kick / any streamlink URL)" required>
+    <input type="text" id="quality" placeholder="quality: best" style="flex:0 1 130px">
+    <label class="chk"><input type="checkbox" id="auto" checked> auto-clip chat spikes</label>
+    <button class="primary">Watch</button>
+  </form>
+
+  <h2>Streams</h2>
+  <div class="streams" id="streams"></div>
+
+  <h2>Clips</h2>
+  <div class="clips" id="clips"></div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+let cfg = {};
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 3500); }
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(typeof m === "string" ? m : JSON.stringify(m)); }
+  return r.status === 204 ? null : r.json();
+}
+
+$("#add").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await api("/api/streams", { method: "POST", body: JSON.stringify({
+      url: $("#url").value.trim(), quality: $("#quality").value.trim() || null, auto: $("#auto").checked }) });
+    $("#url").value = ""; refreshStreams();
+  } catch (err) { toast(err.message); }
+};
+
+const fmtAgo = ts => { const s = Math.round(Date.now()/1000 - ts); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s/60)}m ago` : new Date(ts*1000).toLocaleString(); };
+
+function streamCard(s) {
+  const live = s.status === "live";
+  const chat = s.channel ? `chat: ${esc(s.chat_status)}` : "no chat (auto-clip needs a Twitch URL)";
+  const events = s.hype_events.map(e => `<div>🔥 x${e.score} · ${esc(e.words.join(", "))} · ${fmtAgo(e.at)}${e.clip_id ? " · clipped" : ""}</div>`).join("");
+  return `<div class="card" data-id="${s.id}">
+    <div class="top"><div><div class="name">${esc(s.name)}</div><div class="url">${esc(s.url)} · ${esc(s.quality)}</div></div>
+      <span class="pill ${live ? "live" : "off"}">${esc(s.status)}</span></div>
+    <div class="stats">
+      <div class="stat"><b>${Math.round(s.buffered)}s</b><span>buffered</span></div>
+      <div class="stat"><b>${s.rate.toFixed(1)}</b><span>chat msg/s</span></div>
+      <div class="stat"><b>${s.baseline.toFixed(1)}</b><span>baseline</span></div>
+    </div>
+    <canvas width="600" height="120"></canvas>
+    <div class="url" style="margin-top:6px">${chat} · ${s.messages} msgs</div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" class="auto" ${s.auto ? "checked" : ""}> auto</label>
+      <span class="url">sensitivity x<span class="mv">${s.multiplier.toFixed(1)}</span></span>
+      <input type="range" class="mult" min="1.5" max="8" step="0.5" value="${s.multiplier}" title="spike threshold: lower = more clips">
+    </div>
+    <div class="row">
+      <button class="clip" ${live ? "" : "disabled"}>✂ Clip last ${cfg.manual_pre}s</button>
+      <button class="ghost remove">Stop</button>
+    </div>
+    ${s.error && !live ? `<div class="err">${esc(s.error)}</div>` : ""}
+    ${events ? `<div class="events">${events}</div>` : ""}
+  </div>`;
+}
+
+function drawSpark(canvas, hist) {
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (hist.length < 2) return;
+  const max = Math.max(1, ...hist.map(h => Math.max(h[0], h[1])));
+  const x = i => i / (hist.length - 1) * W, y = v => H - 6 - v / max * (H - 12);
+  const line = (idx, color, width) => { ctx.beginPath(); hist.forEach((h, i) => i ? ctx.lineTo(x(i), y(h[idx])) : ctx.moveTo(x(i), y(h[idx]))); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke(); };
+  line(1, "#8b93a7", 2); line(0, "#8b5cf6", 3);
+}
+
+async function refreshStreams() {
+  const list = await api("/api/streams").catch(() => null);
+  if (!list) return;
+  const root = $("#streams");
+  if (document.activeElement && root.contains(document.activeElement) && document.activeElement.type === "range") return;
+  root.innerHTML = list.length ? list.map(streamCard).join("") : `<div class="empty">Paste a stream URL above to start buffering.</div>`;
+  list.forEach(s => {
+    const card = root.querySelector(`[data-id="${s.id}"]`);
+    drawSpark(card.querySelector("canvas"), s.history);
+    card.querySelector(".clip").onclick = async () => { try { await api(`/api/streams/${s.id}/clip`, { method: "POST", body: "{}" }); toast("Clipping… it'll appear below in a few seconds"); refreshClips(); } catch (e) { toast(e.message); } };
+    card.querySelector(".remove").onclick = async () => { if (confirm(`Stop watching ${s.name}?`)) { await api(`/api/streams/${s.id}`, { method: "DELETE" }); refreshStreams(); } };
+    card.querySelector(".auto").onchange = e => api(`/api/streams/${s.id}`, { method: "PATCH", body: JSON.stringify({ auto: e.target.checked }) });
+    const m = card.querySelector(".mult");
+    m.oninput = () => card.querySelector(".mv").textContent = (+m.value).toFixed(1);
+    m.onchange = async () => { await api(`/api/streams/${s.id}`, { method: "PATCH", body: JSON.stringify({ multiplier: +m.value }) }); m.blur(); };
+  });
+}
+
+let clipSig = "";
+async function refreshClips() {
+  const list = await api("/api/clips").catch(() => null);
+  if (!list) return;
+  const sig = list.map(c => c.id + c.status).join();
+  if (sig === clipSig) return;
+  clipSig = sig;
+  $("#clips").innerHTML = list.length ? list.map(c => `<div class="clipcard">
+    ${c.status === "ready" ? `<video src="/media/${encodeURIComponent(c.file)}" ${c.thumb ? `poster="/media/${encodeURIComponent(c.thumb)}"` : ""} controls preload="none"></video>`
+      : `<div class="ph">${c.status === "pending" ? "⏳ cutting…" : "⚠ " + esc(c.error)}</div>`}
+    <div class="meta">
+      <div class="title"><span class="tag ${c.reason}">${c.reason.toUpperCase()}</span>${esc(c.title)}</div>
+      <div class="sub">${fmtAgo(c.created_at)}${c.duration ? ` · ${c.duration.toFixed(0)}s` : ""}${c.detail ? " · " + esc(c.detail) : ""}</div>
+      <div class="row">${c.status === "ready" ? `<a href="/media/${encodeURIComponent(c.file)}" download>Download</a>` : ""}
+        <button class="ghost" onclick="delClip('${c.id}')">Delete</button></div>
+    </div></div>`).join("") : `<div class="empty">No clips yet. Hit ✂ or let chat spikes do it for you.</div>`;
+}
+async function delClip(id) { await api(`/api/clips/${id}`, { method: "DELETE" }); refreshClips(); }
+
+(async () => {
+  cfg = await api("/api/config");
+  await refreshStreams(); await refreshClips();
+  setInterval(refreshStreams, 2000); setInterval(refreshClips, 2500);
+})();
+</script>
+</body>
+</html>
