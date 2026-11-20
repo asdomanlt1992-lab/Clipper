@@ -66,6 +66,15 @@ instead of deciding.
 roughly a cent each. Server-side refusal fallback is on, so a refused request is retried on another
 model automatically.
 
+### Minimum clip length
+
+Every clip is at least `CLIPPER_MIN_CLIP_SECONDS` (31s) long:
+
+- a request shorter than that gets more footage from before the moment
+- if the stream started too recently to have that much footage, it keeps recording after the
+  moment until the clip is long enough
+- if the stream drops before then, the clip fails with a message instead of saving a short video
+
 ### Recording
 
 - `streamlink` pulls the stream and `ffmpeg` splits it into short segments without re-encoding,
@@ -145,6 +154,7 @@ curl -XPOST localhost:8000/api/streams/<id>/clip -H 'content-type: application/j
 | `CLIPPER_SEGMENT_SECONDS` | `2` | Segment size (clip boundary granularity) |
 | `CLIPPER_QUALITY` | `best` | Default streamlink quality |
 | `CLIPPER_RECONNECT_SECONDS` | `30` | Retry interval when a stream is offline |
+| `CLIPPER_MIN_CLIP_SECONDS` | `31` | Every clip is at least this long (see below) |
 | `CLIPPER_MANUAL_PRE` / `_POST` | `30` / `5` | Manual clip window |
 | `CLIPPER_AUTO_PRE` / `_POST` | `30` / `10` | Auto clip window |
 | `CLIPPER_HYPE_WINDOW` | `10` | Seconds of "recent" chat |

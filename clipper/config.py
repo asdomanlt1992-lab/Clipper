@@ -32,6 +32,7 @@ class Settings:
     reconnect_seconds: float = field(default_factory=lambda: _env("RECONNECT_SECONDS", 30.0, float))
 
     # Clip lengths
+    min_clip_seconds: float = field(default_factory=lambda: _env("MIN_CLIP_SECONDS", 31.0, float))
     manual_pre: float = field(default_factory=lambda: _env("MANUAL_PRE", 30.0, float))
     manual_post: float = field(default_factory=lambda: _env("MANUAL_POST", 5.0, float))
     auto_pre: float = field(default_factory=lambda: _env("AUTO_PRE", 30.0, float))

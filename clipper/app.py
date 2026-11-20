@@ -49,7 +49,7 @@ class ClipRequest(BaseModel):
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    library = ClipLibrary(settings.clips_dir)
+    library = ClipLibrary(settings.clips_dir, settings.min_clip_seconds)
     manager = StreamManager(settings, library)
     streams_file = settings.data_dir / "streams.json"
 
@@ -102,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "manual_pre": settings.manual_pre, "manual_post": settings.manual_post,
                 "auto_pre": settings.auto_pre, "auto_post": settings.auto_post,
                 "multiplier": settings.hype_multiplier,
+                "min_clip_seconds": settings.min_clip_seconds,
                 "classifier": settings.classifier_enabled,
                 "classifier_model": settings.claude_model if settings.classifier_enabled else "",
                 "transcribe": settings.transcribe != "off" and analysis.whisper_available(),
@@ -143,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s = get_stream(stream_id)
         pre = body.pre if body.pre is not None else settings.manual_pre
         post = body.post if body.post is not None else settings.manual_post
+        pre = max(pre, settings.min_clip_seconds - post)
         if pre + post > settings.buffer_seconds:
             raise HTTPException(400, f"clip longer than the {settings.buffer_seconds:.0f}s buffer")
         return asdict(s.clip(pre, post, body.title))

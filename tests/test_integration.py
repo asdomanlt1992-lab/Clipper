@@ -18,7 +18,7 @@ SOURCE = "lavfi:testsrc=size=320x180:rate=30[out0];sine=f=440[out1]"
 def settings(tmp_path, **kw):
     base = dict(data_dir=tmp_path, segment_seconds=1, buffer_seconds=30, auto_pre=4, auto_post=1,
                 hype_window=2, hype_warmup=3, hype_min_messages=5, hype_cooldown=60,
-                transcribe="off", classifier="off")
+                transcribe="off", classifier="off", min_clip_seconds=0)
     base.update(kw)
     return Settings(**base)
 
@@ -37,7 +37,7 @@ def fake_chat(burst_text):
 
 
 async def run_stream(s, burst_text, wait_for_clip=True):
-    lib = ClipLibrary(s.clips_dir)
+    lib = ClipLibrary(s.clips_dir, s.min_clip_seconds)
     ws = WatchedStream(SOURCE, "best", True, s, lib)
     ws.chat = fake_chat(burst_text)
     ws.start()
@@ -64,6 +64,15 @@ def test_hype_burst_is_clipped_and_approved(tmp_path):
     assert (lib.dir / c.file).stat().st_size > 0 and c.duration >= 3
     assert c.verdict == "approved" and c.score >= 50, (c.score, c.verdict_reason)
     assert ws.audio.has_audio is True
+
+
+def test_minimum_length_is_enforced(tmp_path):
+    # pre 4 + post 1 asks for 5s; the stream has only a few seconds buffered at the moment,
+    # so the clip has to keep recording after the moment to reach the 12s minimum.
+    lib, _ = asyncio.run(run_stream(settings(tmp_path, min_clip_seconds=12), "POG no way"))
+    c = lib.list()[0]
+    assert c.status == "ready", c.error
+    assert c.duration >= 12 - 0.1, c.duration
 
 
 def test_negative_chat_is_skipped(tmp_path):

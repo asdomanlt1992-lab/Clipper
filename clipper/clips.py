@@ -48,8 +48,9 @@ Analyzer = Callable[["Clip", Path], Awaitable[None]]
 
 
 class ClipLibrary:
-    def __init__(self, clips_dir: Path):
+    def __init__(self, clips_dir: Path, min_seconds: float = 0.0):
         self.dir = clips_dir
+        self.min_seconds = min_seconds
         self.dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.dir / "index.json"
         self.clips: dict[str, Clip] = {}
@@ -114,6 +115,8 @@ class ClipLibrary:
                 at: float | None = None, meta: dict | None = None, score: float = 0.0,
                 analyzer: Analyzer | None = None) -> Clip:
         now = at if at is not None else time.time()
+        if pre + post < self.min_seconds:
+            pre = self.min_seconds - post  # make up the difference with earlier footage
         clip = Clip(
             id=time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + "-" + uuid.uuid4().hex[:6],
             stream_id=stream_id, channel=channel, title=title, reason=reason,
@@ -127,13 +130,21 @@ class ClipLibrary:
     async def _cut(self, recorder: Recorder, clip: Clip, analyzer: Analyzer | None = None) -> None:
         try:
             start, end = clip.created_at - clip.pre, clip.created_at + clip.post
-            # Wait until the post-roll has been written (plus one segment to close).
-            wait = end + recorder.segment_seconds + 0.5 - time.time()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            segs = select_segments(recorder.segments(), start, end)
-            if not segs:
-                raise RuntimeError("no buffered video for that time range (is the stream live?)")
+            segs: list = []
+            for _ in range(3):
+                # Wait until the post-roll has been written (plus one segment to close).
+                wait = end + recorder.segment_seconds + 0.5 - time.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                segs = select_segments(recorder.segments(), start, end)
+                if not segs:
+                    raise RuntimeError("no buffered video for that time range (is the stream live?)")
+                # Not enough earlier footage (e.g. the stream just started)? Record longer instead.
+                covered_from = max(start, segs[0].start)
+                if end - covered_from >= self.min_seconds:
+                    break
+                end = covered_from + self.min_seconds
+                clip.post = end - clip.created_at
             out = self.dir / f"{clip.id}.mp4"
             thumb = self.dir / f"{clip.id}.jpg"
             await concat_segments([s.path for s in segs], out)
@@ -141,6 +152,12 @@ class ClipLibrary:
             clip.file = out.name
             clip.thumb = thumb.name if thumb.exists() else ""
             clip.duration = await probe_duration(out)
+            if clip.duration and clip.duration < self.min_seconds - 0.1:
+                out.unlink(missing_ok=True)
+                thumb.unlink(missing_ok=True)
+                clip.file = clip.thumb = ""
+                raise RuntimeError(f"only {clip.duration:.0f}s of video available "
+                                   f"(minimum is {self.min_seconds:.0f}s); the stream probably dropped")
             if analyzer:
                 clip.status = "analyzing"
                 self.save()
