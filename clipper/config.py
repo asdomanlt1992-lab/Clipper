@@ -89,6 +89,30 @@ class Settings:
         default_factory=lambda: _csv("REJECT_CATEGORIES", "rage,argument,technical,offtopic,sensitive")
     )
 
+    # Vertical export + posting
+    public_url: str = field(default_factory=lambda: _env("PUBLIC_URL", "http://localhost:8000").rstrip("/"))
+    vertical: bool = field(default_factory=lambda: _env("VERTICAL", True, bool))
+    vertical_mode: str = field(default_factory=lambda: _env("VERTICAL_MODE", "blur"))  # blur | crop
+    captions: bool = field(default_factory=lambda: _env("CAPTIONS", True, bool))
+    hashtags: list[str] = field(default_factory=lambda: _csv("HASHTAGS", "shorts,gaming,clips,livestream"))
+    post_requires_classifier: bool = field(default_factory=lambda: _env("POST_REQUIRES_CLASSIFIER", True, bool))
+    post_interval_minutes: float = field(default_factory=lambda: _env("POST_INTERVAL_MINUTES", 20.0, float))
+    post_youtube: bool = field(default_factory=lambda: _env("POST_YOUTUBE", True, bool))
+    youtube_client_id: str = field(default_factory=lambda: _env("YOUTUBE_CLIENT_ID", ""))
+    youtube_client_secret: str = field(default_factory=lambda: _env("YOUTUBE_CLIENT_SECRET", ""))
+    youtube_privacy: str = field(default_factory=lambda: _env("YOUTUBE_PRIVACY", "public"))
+    youtube_category: str = field(default_factory=lambda: _env("YOUTUBE_CATEGORY", "20"))
+    youtube_daily_limit: int = field(default_factory=lambda: _env("YOUTUBE_DAILY_LIMIT", 6, int))
+    post_tiktok: bool = field(default_factory=lambda: _env("POST_TIKTOK", True, bool))
+    tiktok_client_key: str = field(default_factory=lambda: _env("TIKTOK_CLIENT_KEY", ""))
+    tiktok_client_secret: str = field(default_factory=lambda: _env("TIKTOK_CLIENT_SECRET", ""))
+    tiktok_privacy: str = field(default_factory=lambda: _env("TIKTOK_PRIVACY", "PUBLIC_TO_EVERYONE"))
+    tiktok_daily_limit: int = field(default_factory=lambda: _env("TIKTOK_DAILY_LIMIT", 10, int))
+
+    @property
+    def secrets_dir(self) -> Path:
+        return self.data_dir / "secrets"
+
     @property
     def classifier_enabled(self) -> bool:
         if self.classifier == "off":

@@ -65,6 +65,13 @@
   .banner { font-size: 12px; color: var(--muted); margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
   .banner b { color: var(--text); }
   .skip { opacity: .6; }
+  .platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .posts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .post { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .post.posted { border-color: var(--ok); color: var(--ok); }
+  .post.failed { border-color: var(--bad); color: var(--bad); }
+  .post.uploading, .post.scheduled { border-color: var(--accent2); color: var(--accent2); }
+  code { font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
   .empty { color: var(--muted); padding: 20px; border: 1px dashed var(--line); border-radius: 12px; text-align: center; }
   a { color: var(--accent2); }
   .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel);
@@ -81,6 +88,9 @@
     <button class="primary">Watch</button>
   </form>
   <div class="banner" id="banner"></div>
+
+  <h2>Posting</h2>
+  <div class="platforms" id="platforms"></div>
 
   <h2>Streams</h2>
   <div class="streams" id="streams"></div>
@@ -194,15 +204,18 @@ function clipCard(c) {
       ${c.summary ? `<div class="why">${esc(c.summary)}</div>` : ""}
       ${c.verdict_reason ? `<div class="why">Why: ${esc(c.verdict_reason)}</div>` : ""}
       ${errs ? `<div class="err">${errs}</div>` : ""}
+      ${postBadges(c)}
       ${c.transcript ? `<details class="why"><summary>Transcript</summary><pre style="white-space:pre-wrap">${esc(c.transcript)}</pre></details>` : ""}
       <div class="row">${c.status === "ready" && c.file ? `<a href="/media/${encodeURIComponent(c.file)}" download>Download</a>` : ""}
+        ${c.vertical ? `<a href="/media/${encodeURIComponent(c.vertical)}" download>Vertical</a>` : ""}
+        ${c.status === "ready" && c.file && anyPlatform() && !allPosted(c) ? `<button class="ghost" onclick="postClip('${c.id}')">${Object.values(c.posts).some(p => p.status === "failed") ? "Retry post" : "Post"}</button>` : ""}
         ${actions}<button class="ghost" onclick="delClip('${c.id}')">Delete</button></div>
     </div></div>`;
 }
 async function refreshClips() {
   const list = await api("/api/clips").catch(() => null);
   if (!list) return;
-  const sig = clipFilter + list.map(c => c.id + c.status + c.verdict + c.purged).join();
+  const sig = clipFilter + list.map(c => c.id + c.status + c.verdict + c.purged + c.vertical + JSON.stringify(c.posts)).join();
   if (sig === clipSig) return;
   clipSig = sig; clipList = list;
   renderTabs();
@@ -210,6 +223,42 @@ async function refreshClips() {
   $("#clips").innerHTML = shown.length ? shown.map(clipCard).join("")
     : `<div class="empty">${list.length ? "Nothing here." : "No clips yet. Hit ✂ or let it catch moments for you."}</div>`;
 }
+let platformInfo = {};
+const PNAME = { youtube: "YouTube Shorts", tiktok: "TikTok" };
+const anyPlatform = () => Object.values(platformInfo).some(p => p.active);
+const allPosted = c => Object.keys(platformInfo).filter(k => platformInfo[k].active).every(k => c.posts[k]?.status === "posted");
+const fmtTime = ts => new Date(ts * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+function postBadges(c) {
+  const items = Object.entries(c.posts || {}).map(([k, p]) => {
+    const label = { posted: "posted", uploading: "uploading…", scheduled: p.next_try ? "next try " + fmtTime(p.next_try) : "scheduled",
+                    waiting: "waiting", failed: "failed", pending: "queued" }[p.status] || p.status;
+    const text = `${PNAME[k] || k}: ${label}${p.privacy === "SELF_ONLY" ? " (private)" : ""}`;
+    const title = esc(p.error || "");
+    return p.url ? `<a class="post ${p.status}" href="${esc(p.url)}" target="_blank" rel="noopener" title="${title}">${text} ↗</a>`
+                 : `<span class="post ${p.status}" title="${title}">${text}</span>`;
+  });
+  if (c.status_detail) items.push(`<span class="post uploading">${esc(c.status_detail)}…</span>`);
+  const why = Object.entries(c.posts || {}).filter(([, p]) => p.error && p.status !== "posted")
+    .map(([k, p]) => `<div class="${p.status === "failed" ? "err" : "why"}">${PNAME[k] || k}: ${esc(p.error.slice(0, 160))}</div>`).join("");
+  return items.length ? `<div class="posts">${items.join("")}</div>${why}` : "";
+}
+async function refreshPlatforms() {
+  const info = await api("/api/platforms").catch(() => null);
+  if (!info) return;
+  platformInfo = info;
+  $("#platforms").innerHTML = Object.entries(info).map(([k, p]) => {
+    let body;
+    if (!p.configured) body = `<div class="url">Not set up. Add the app keys (see README → Posting), then restart. Redirect URI to register:</div><code>${esc(p.redirect_uri)}</code>`;
+    else if (!p.connected) body = `<div class="row"><a href="/auth/${k}"><button class="primary">Connect ${PNAME[k]}</button></a></div>`;
+    else body = `<div class="url">${p.enabled ? "Auto-posting kept clips" : "Connected, posting turned off"} · ${p.posted_24h}/${p.daily_limit || "∞"} in last 24h · privacy: ${esc(p.privacy)}
+        ${p.next_slot > Date.now() / 1000 + 60 ? `· next slot ${fmtTime(p.next_slot)}` : ""}</div>
+        <div class="row"><button class="ghost" onclick="disconnectPlatform('${k}')">Disconnect</button></div>`;
+    return `<div class="card"><div class="top"><div class="name">${PNAME[k]}</div>
+      <span class="pill ${p.active ? "live" : "off"}">${p.active ? "connected" : p.configured ? "not connected" : "not set up"}</span></div>${body}</div>`;
+  }).join("");
+}
+async function postClip(id) { try { await api(`/api/clips/${id}/post`, { method: "POST" }); toast("Queued for posting"); clipSig = ""; refreshClips(); } catch (e) { toast(e.message); } }
+async function disconnectPlatform(k) { if (confirm(`Disconnect ${PNAME[k]}?`)) { await api(`/api/platforms/${k}`, { method: "DELETE" }); refreshPlatforms(); } }
 async function setVerdict(id, verdict) { try { await api(`/api/clips/${id}/verdict`, { method: "POST", body: JSON.stringify({ verdict }) }); clipSig = ""; refreshClips(); } catch (e) { toast(e.message); } }
 async function delClip(id) { await api(`/api/clips/${id}`, { method: "DELETE" }); refreshClips(); }
 
@@ -220,8 +269,10 @@ async function delClip(id) { await api(`/api/clips/${id}`, { method: "DELETE" })
     <span>Transcription: ${on(cfg.transcribe)}</span><span>Audio: ${on(cfg.audio)}</span>
     <span>Rejects: ${esc(cfg.reject_categories.join(", "))}</span>
     <span>Rejected videos deleted after ${cfg.rejected_keep_hours}h</span>`;
-  await refreshStreams(); await refreshClips();
-  setInterval(refreshStreams, 2000); setInterval(refreshClips, 2500);
+  await refreshPlatforms(); await refreshStreams(); await refreshClips();
+  setInterval(refreshStreams, 2000); setInterval(refreshClips, 2500); setInterval(refreshPlatforms, 15000);
+  const connected = new URLSearchParams(location.search).get("connected");
+  if (connected) { toast(`${PNAME[connected] || connected} connected`); history.replaceState(null, "", "/"); }
 })();
 </script>
 </body>

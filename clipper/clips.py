@@ -41,6 +41,10 @@ class Clip:
     summary: str = ""
     transcript: str = ""
     purged: bool = False  # video deleted (rejected clips after the retention period)
+    platform: str = ""
+    status_detail: str = ""
+    vertical: str = ""  # 9:16 version for Shorts/TikTok
+    posts: dict = field(default_factory=dict)  # platform -> {status, url, id, error, posted_at, ...}
 
 
 # Called after cutting: (clip, video path) -> None. Sets verdict/category/etc. on the clip.
@@ -54,6 +58,7 @@ class ClipLibrary:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.dir / "index.json"
         self.clips: dict[str, Clip] = {}
+        self.on_approved: Callable[[Clip], None] | None = None  # set by the publisher
         self._load()
 
     def _load(self) -> None:
@@ -80,7 +85,7 @@ class ClipLibrary:
         clip = self.clips.pop(clip_id, None)
         if not clip:
             return False
-        for name in (clip.file, clip.thumb):
+        for name in (clip.file, clip.thumb, clip.vertical):
             if name:
                 (self.dir / name).unlink(missing_ok=True)
         self.save()
@@ -92,6 +97,8 @@ class ClipLibrary:
             raise ValueError("the video was already deleted")
         clip.verdict, clip.verdict_reason = verdict, "set by hand"
         self.save()
+        if verdict == "approved" and clip.status == "ready" and self.on_approved:
+            self.on_approved(clip)
         return clip
 
     def purge_rejected(self, keep_hours: float) -> int:
@@ -100,10 +107,10 @@ class ClipLibrary:
         n = 0
         for clip in self.clips.values():
             if clip.verdict == "rejected" and not clip.purged and clip.created_at <= cutoff:
-                for name in (clip.file, clip.thumb):
+                for name in (clip.file, clip.thumb, clip.vertical):
                     if name:
                         (self.dir / name).unlink(missing_ok=True)
-                clip.file = clip.thumb = ""
+                clip.file = clip.thumb = clip.vertical = ""
                 clip.purged = True
                 n += 1
         if n:
@@ -113,7 +120,7 @@ class ClipLibrary:
     def request(self, recorder: Recorder, *, stream_id: str, channel: str, title: str,
                 reason: str, detail: str, pre: float, post: float,
                 at: float | None = None, meta: dict | None = None, score: float = 0.0,
-                analyzer: Analyzer | None = None) -> Clip:
+                analyzer: Analyzer | None = None, platform: str = "") -> Clip:
         now = at if at is not None else time.time()
         if pre + post < self.min_seconds:
             pre = self.min_seconds - post  # make up the difference with earlier footage
@@ -121,6 +128,7 @@ class ClipLibrary:
             id=time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + "-" + uuid.uuid4().hex[:6],
             stream_id=stream_id, channel=channel, title=title, reason=reason,
             detail=detail, created_at=now, pre=pre, post=post, meta=meta or {}, score=score,
+            platform=platform,
         )
         self.clips[clip.id] = clip
         self.save()
@@ -166,6 +174,8 @@ class ClipLibrary:
                 clip.verdict = "approved" if clip.reason == "manual" else "review"
             clip.status = "ready"
             log.info("clip %s ready (%.1fs, %s)", clip.id, clip.duration, clip.verdict)
+            if clip.verdict == "approved" and self.on_approved:
+                self.on_approved(clip)
         except Exception as exc:  # noqa: BLE001
             clip.status, clip.error = "failed", str(exc)
             log.warning("clip %s failed: %s", clip.id, exc)

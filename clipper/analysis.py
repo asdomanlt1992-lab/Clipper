@@ -66,6 +66,7 @@ CLASSIFY_SCHEMA = {
 @dataclass
 class Analysis:
     transcript: str = ""
+    words: list[list] = field(default_factory=list)  # [start, end, word] for captions
     classification: dict | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -83,24 +84,26 @@ def whisper_available() -> bool:
         return False
 
 
-def _transcribe_sync(path: str, settings: Settings) -> str:
+def _transcribe_sync(path: str, settings: Settings) -> tuple[str, list[list]]:
     global _whisper_model
     from faster_whisper import WhisperModel
     if _whisper_model is None:
         log.info("loading whisper model %s (first run downloads it)", settings.whisper_model)
         _whisper_model = WhisperModel(settings.whisper_model, device=settings.whisper_device,
                                       compute_type="int8")
-    segments, _ = _whisper_model.transcribe(path, vad_filter=True)
-    lines = []
+    segments, _ = _whisper_model.transcribe(path, vad_filter=True, word_timestamps=True)
+    lines, words = [], []
     for seg in segments:
         m, s = divmod(int(seg.start), 60)
         text = seg.text.strip()
         if text:
             lines.append(f"[{m:02d}:{s:02d}] {text}")
-    return "\n".join(lines)
+        for w in seg.words or []:
+            words.append([round(w.start, 2), round(w.end, 2), w.word.strip()])
+    return "\n".join(lines), words
 
 
-async def transcribe(path: Path, settings: Settings) -> str:
+async def transcribe(path: Path, settings: Settings) -> tuple[str, list[list]]:
     async with _whisper_lock:  # one at a time; it's CPU heavy
         return await asyncio.to_thread(_transcribe_sync, str(path), settings)
 
@@ -194,7 +197,7 @@ async def analyze(video: Path, duration: float, context: dict, settings: Setting
         settings.transcribe == "auto" and whisper_available())
     if want_transcript:
         try:
-            result.transcript = await transcribe(video, settings)
+            result.transcript, result.words = await transcribe(video, settings)
         except Exception as exc:  # noqa: BLE001
             result.errors.append(f"transcription failed: {exc}")
             log.warning("transcription failed: %s", exc)

@@ -135,7 +135,7 @@ class WatchedStream:
                 title=f"{self.name}: {detail.split(',')[0]}{title_words}",
                 reason="auto", detail=detail,
                 pre=self.settings.auto_pre, post=self.settings.auto_post, at=now,
-                meta=info, score=s["score"], analyzer=self._analyze,
+                meta=info, score=s["score"], analyzer=self._analyze, platform=self.platform,
             )
             info["clip_id"] = clip.id
         self.hype_events.appendleft(info)
@@ -152,6 +152,8 @@ class WatchedStream:
             }
             result = await analysis.analyze(video, clip.duration, context, self.settings)
             clip.transcript = result.transcript
+            if result.words:
+                clip.meta["words"] = result.words
             if result.classification:
                 cls = result.classification
                 clip.category = cls.get("category", "")
@@ -175,7 +177,7 @@ class WatchedStream:
         return self.library.request(
             self.recorder, stream_id=self.id, channel=self.name,
             title=title or f"{self.name}: manual clip", reason="manual", detail="",
-            pre=pre, post=post, at=now, analyzer=self._analyze,
+            pre=pre, post=post, at=now, analyzer=self._analyze, platform=self.platform,
             meta={"breakdown": score_moment(0, self.detector.multiplier,
                                             self.detector.mood(now), audio_db)},
         )
