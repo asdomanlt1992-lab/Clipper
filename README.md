@@ -2,14 +2,14 @@
 
 Live stream clipper with automatic highlights. Point it at a live stream and it keeps a rolling
 video buffer on disk. Clip the last N seconds with one click, or let it clip automatically when
-Twitch chat goes off.
+chat goes off (Twitch, YouTube Live and Kick).
 
 ## How it works
 
 ```
 streamlink ──► ffmpeg (stream copy) ──► 2s .ts segments (rolling buffer, default 180s)
                                                │
- Twitch chat (anonymous IRC) ──► hype detector ┤──► concat segments ──► clips/*.mp4 + thumbnail
+ Twitch / YouTube / Kick chat ──► hype detector ┤──► concat segments ──► clips/*.mp4 + thumbnail
                          ✂ button / API ───────┘
 ```
 
@@ -17,13 +17,24 @@ streamlink ──► ffmpeg (stream copy) ──► 2s .ts segments (rolling buf
   re-encoding, so the CPU cost stays low. Segments older than the buffer get deleted.
 - **Clipping**: the segments covering `[t - pre, t + post]` are joined into an MP4. It waits for
   the post-roll before cutting.
-- **Auto-highlights**: for Twitch URLs it joins chat anonymously (no login needed) and compares the
+- **Auto-highlights**: it reads the stream's live chat anonymously (no login needed) and compares the
   message rate over the last 10s with the 5-minute baseline. Messages containing hype keywords
   (`pog`, `kekw`, `clip`, `no way`, …) count double. When the recent rate passes
   `multiplier × baseline` (and at least `min_messages` arrive in the window), it saves a clip
   covering the 30s before and 10s after. A cooldown stops repeat clips of the same moment.
-- Any site streamlink supports (YouTube, Kick, …) can be recorded and clipped manually. Only Twitch
-  has chat-based auto-clipping.
+- Any site streamlink supports can be recorded and clipped manually. Auto-clipping needs a chat
+  reader:
+
+  | Platform | URL forms | How chat is read |
+  |---|---|---|
+  | Twitch | `twitch.tv/<channel>` | Anonymous IRC |
+  | YouTube Live | `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/live/…`, `youtube.com/@name/live` | Polls the internal endpoint the chat popout uses (no API key or quota) |
+  | Kick | `kick.com/<channel>` | Kick's public Pusher websocket |
+
+  The YouTube and Kick readers use unofficial endpoints, so they can break if the sites change.
+  Kick's channel lookup (`kick.com/api/v2/channels/<name>`) is sometimes blocked by Cloudflare. If
+  that happens, set `CLIPPER_KICK_CHATROOM_<NAME>=<chatroom id>` to skip the lookup. If Kick changes
+  its Pusher key, override it with `CLIPPER_KICK_PUSHER_KEY` / `CLIPPER_KICK_PUSHER_CLUSTER`.
 
 ## Run
 

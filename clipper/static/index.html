@@ -101,7 +101,7 @@ const fmtAgo = ts => { const s = Math.round(Date.now()/1000 - ts); return s < 60
 
 function streamCard(s) {
   const live = s.status === "live";
-  const chat = s.channel ? `chat: ${esc(s.chat_status)}` : "no chat (auto-clip needs a Twitch URL)";
+  const chat = s.platform ? `${esc(s.platform)} chat: ${esc(s.chat_status)}` : "no chat reader for this site (manual clips only)";
   const events = s.hype_events.map(e => `<div>🔥 x${e.score} · ${esc(e.words.join(", "))} · ${fmtAgo(e.at)}${e.clip_id ? " · clipped" : ""}</div>`).join("");
   return `<div class="card" data-id="${s.id}">
     <div class="top"><div><div class="name">${esc(s.name)}</div><div class="url">${esc(s.url)} · ${esc(s.quality)}</div></div>

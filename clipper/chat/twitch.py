@@ -7,6 +7,8 @@ import random
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
+from ._util import deliver
+
 log = logging.getLogger(__name__)
 
 TWITCH_HOST = "irc.chat.twitch.tv"
@@ -63,9 +65,7 @@ async def run_twitch_chat(
                     continue
                 parsed = parse_privmsg(line)
                 if parsed:
-                    result = on_message(*parsed)
-                    if asyncio.iscoroutine(result):
-                        await result
+                    await deliver(on_message, *parsed)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

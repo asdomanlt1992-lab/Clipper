@@ -7,7 +7,7 @@ import time
 import uuid
 from collections import deque
 
-from .chat import run_twitch_chat, twitch_channel
+from .chat import chat_source_for
 from .clips import ClipLibrary
 from .config import Settings
 from .hype import HypeDetector
@@ -25,7 +25,9 @@ class WatchedStream:
         self.auto = auto
         self.settings = settings
         self.library = library
-        self.channel = twitch_channel(url) or ""
+        self.chat = chat_source_for(url)
+        self.platform = self.chat.platform if self.chat else ""
+        self.channel = self.chat.channel if self.chat else ""
         self.name = self.channel or url
         self.created_at = time.time()
         self.chat_status = "n/a" if not self.channel else "idle"
@@ -49,9 +51,9 @@ class WatchedStream:
 
     def start(self) -> None:
         self.recorder.start()
-        if self.channel:
+        if self.chat:
             self._tasks.append(asyncio.create_task(
-                run_twitch_chat(self.channel, self._on_message, self._on_chat_status)))
+                self.chat.run(self._on_message, self._on_chat_status)))
             self._tasks.append(asyncio.create_task(self._hype_loop()))
 
     async def stop(self) -> None:
@@ -103,6 +105,7 @@ class WatchedStream:
         rate, baseline, _ = self.detector.stats(time.time()) if self.channel else (0, 0, 0)
         return {
             "id": self.id, "url": self.url, "name": self.name, "channel": self.channel,
+            "platform": self.platform,
             "quality": self.quality, "auto": self.auto,
             "multiplier": self.detector.multiplier,
             "status": self.recorder.status, "error": self.recorder.last_error,
