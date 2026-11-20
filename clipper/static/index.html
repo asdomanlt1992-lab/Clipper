@@ -35,7 +35,7 @@
   .pill { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
   .pill.live { color: var(--ok); border-color: var(--ok); }
   .pill.off { color: var(--warn); border-color: var(--warn); }
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
   .stat { background: var(--bg); border-radius: 8px; padding: 8px; }
   .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
   .stat span { color: var(--muted); font-size: 11px; }
@@ -54,6 +54,17 @@
   .tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 6px; }
   .tag.auto { background: var(--accent); color: #fff; }
   .tag.manual { background: var(--accent2); color: #000; }
+  .verdict { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px; }
+  .verdict.approved { background: var(--ok); color: #000; }
+  .verdict.rejected { background: var(--bad); color: #fff; }
+  .verdict.review { background: var(--warn); color: #000; }
+  .clipcard.rejected { opacity: .6; }
+  .why { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .banner { font-size: 12px; color: var(--muted); margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .banner b { color: var(--text); }
+  .skip { opacity: .6; }
   .empty { color: var(--muted); padding: 20px; border: 1px dashed var(--line); border-radius: 12px; text-align: center; }
   a { color: var(--accent2); }
   .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel);
@@ -69,11 +80,13 @@
     <label class="chk"><input type="checkbox" id="auto" checked> auto-clip chat spikes</label>
     <button class="primary">Watch</button>
   </form>
+  <div class="banner" id="banner"></div>
 
   <h2>Streams</h2>
   <div class="streams" id="streams"></div>
 
   <h2>Clips</h2>
+  <div class="tabs" id="tabs"></div>
   <div class="clips" id="clips"></div>
 </main>
 <div class="toast" id="toast"></div>
@@ -101,15 +114,18 @@ const fmtAgo = ts => { const s = Math.round(Date.now()/1000 - ts); return s < 60
 
 function streamCard(s) {
   const live = s.status === "live";
-  const chat = s.platform ? `${esc(s.platform)} chat: ${esc(s.chat_status)}` : "no chat reader for this site (manual clips only)";
-  const events = s.hype_events.map(e => `<div>🔥 x${e.score} · ${esc(e.words.join(", "))} · ${fmtAgo(e.at)}${e.clip_id ? " · clipped" : ""}</div>`).join("");
+  const chat = s.platform ? `${esc(s.platform)} chat: ${esc(s.chat_status)}` : (s.audio_only ? "no chat reader: auto-clips from audio spikes (checked by Claude)" : "no chat reader for this site (manual clips only)");
+  const events = s.hype_events.map(e => `<div class="${e.skipped ? "skip" : ""}">${e.source === "audio" ? "🔊" : "🔥"} score ${Math.round(e.score)} · ${esc(e.detail)}${e.words.length ? " · " + esc(e.words.join(", ")) : ""} · ${fmtAgo(e.at)} · ${e.skipped ? "skipped: " + esc(e.skipped) : "clipped"}</div>`).join("");
+  const audio = s.has_audio === false ? "no audio" : `+${s.audio_db.toFixed(0)} dB`;
+  const mood = s.platform ? (s.mood > 0.2 ? "😄" : s.mood < -0.2 ? "😬" : "😐") : "";
   return `<div class="card" data-id="${s.id}">
     <div class="top"><div><div class="name">${esc(s.name)}</div><div class="url">${esc(s.url)} · ${esc(s.quality)}</div></div>
       <span class="pill ${live ? "live" : "off"}">${esc(s.status)}</span></div>
     <div class="stats">
       <div class="stat"><b>${Math.round(s.buffered)}s</b><span>buffered</span></div>
       <div class="stat"><b>${s.rate.toFixed(1)}</b><span>chat msg/s</span></div>
-      <div class="stat"><b>${s.baseline.toFixed(1)}</b><span>baseline</span></div>
+      <div class="stat"><b>${s.baseline.toFixed(1)} ${mood}</b><span>baseline · mood</span></div>
+      <div class="stat"><b>${audio}</b><span>audio vs normal</span></div>
     </div>
     <canvas width="600" height="120"></canvas>
     <div class="url" style="margin-top:6px">${chat} · ${s.messages} msgs</div>
@@ -155,27 +171,55 @@ async function refreshStreams() {
   });
 }
 
-let clipSig = "";
+let clipSig = "", clipFilter = "approved", clipList = [];
+function renderTabs() {
+  const n = v => clipList.filter(c => v === "all" || c.verdict === v || (v === "approved" && c.status !== "ready")).length;
+  $("#tabs").innerHTML = [["approved", "Kept"], ["review", "Needs review"], ["rejected", "Rejected"], ["all", "All"]]
+    .filter(([v]) => v !== "review" || n("review"))
+    .map(([v, label]) => `<button class="${clipFilter === v ? "on" : ""}" onclick="clipFilter='${v}';clipSig='';refreshClips()">${label} (${n(v)})</button>`).join("");
+}
+function clipCard(c) {
+  const media = c.status === "ready" && c.file
+    ? `<video src="/media/${encodeURIComponent(c.file)}" ${c.thumb ? `poster="/media/${encodeURIComponent(c.thumb)}"` : ""} controls preload="none"></video>`
+    : `<div class="ph">${c.status === "pending" ? "⏳ cutting…" : c.status === "analyzing" ? "🔍 analyzing…" : c.purged ? "🗑 video deleted" : "⚠ " + esc(c.error)}</div>`;
+  const verdict = c.status === "ready" && c.verdict ? `<span class="verdict ${c.verdict}">${{approved: "KEPT", rejected: "REJECTED", review: "REVIEW"}[c.verdict]}</span> ` : "";
+  const errs = (c.meta.analysis_errors || []).map(esc).join("; ");
+  const actions = c.status !== "ready" ? "" :
+    (c.verdict !== "approved" && !c.purged ? `<button class="ghost" onclick="setVerdict('${c.id}','approved')">Keep</button>` : "") +
+    (c.verdict !== "rejected" ? `<button class="ghost" onclick="setVerdict('${c.id}','rejected')">Reject</button>` : "");
+  return `<div class="clipcard ${c.verdict === "rejected" ? "rejected" : ""}">${media}
+    <div class="meta">
+      <div class="title"><span class="tag ${c.reason}">${c.reason.toUpperCase()}</span>${esc(c.title)}</div>
+      <div class="sub">${verdict}${c.category ? esc(c.category) + " · " : ""}${c.reason === "auto" ? "score " + Math.round(c.score) + " · " : ""}${fmtAgo(c.created_at)}${c.duration ? ` · ${c.duration.toFixed(0)}s` : ""}</div>
+      ${c.summary ? `<div class="why">${esc(c.summary)}</div>` : ""}
+      ${c.verdict_reason ? `<div class="why">Why: ${esc(c.verdict_reason)}</div>` : ""}
+      ${errs ? `<div class="err">${errs}</div>` : ""}
+      ${c.transcript ? `<details class="why"><summary>Transcript</summary><pre style="white-space:pre-wrap">${esc(c.transcript)}</pre></details>` : ""}
+      <div class="row">${c.status === "ready" && c.file ? `<a href="/media/${encodeURIComponent(c.file)}" download>Download</a>` : ""}
+        ${actions}<button class="ghost" onclick="delClip('${c.id}')">Delete</button></div>
+    </div></div>`;
+}
 async function refreshClips() {
   const list = await api("/api/clips").catch(() => null);
   if (!list) return;
-  const sig = list.map(c => c.id + c.status).join();
+  const sig = clipFilter + list.map(c => c.id + c.status + c.verdict + c.purged).join();
   if (sig === clipSig) return;
-  clipSig = sig;
-  $("#clips").innerHTML = list.length ? list.map(c => `<div class="clipcard">
-    ${c.status === "ready" ? `<video src="/media/${encodeURIComponent(c.file)}" ${c.thumb ? `poster="/media/${encodeURIComponent(c.thumb)}"` : ""} controls preload="none"></video>`
-      : `<div class="ph">${c.status === "pending" ? "⏳ cutting…" : "⚠ " + esc(c.error)}</div>`}
-    <div class="meta">
-      <div class="title"><span class="tag ${c.reason}">${c.reason.toUpperCase()}</span>${esc(c.title)}</div>
-      <div class="sub">${fmtAgo(c.created_at)}${c.duration ? ` · ${c.duration.toFixed(0)}s` : ""}${c.detail ? " · " + esc(c.detail) : ""}</div>
-      <div class="row">${c.status === "ready" ? `<a href="/media/${encodeURIComponent(c.file)}" download>Download</a>` : ""}
-        <button class="ghost" onclick="delClip('${c.id}')">Delete</button></div>
-    </div></div>`).join("") : `<div class="empty">No clips yet. Hit ✂ or let chat spikes do it for you.</div>`;
+  clipSig = sig; clipList = list;
+  renderTabs();
+  const shown = list.filter(c => clipFilter === "all" || c.verdict === clipFilter || (clipFilter === "approved" && c.status !== "ready"));
+  $("#clips").innerHTML = shown.length ? shown.map(clipCard).join("")
+    : `<div class="empty">${list.length ? "Nothing here." : "No clips yet. Hit ✂ or let it catch moments for you."}</div>`;
 }
+async function setVerdict(id, verdict) { try { await api(`/api/clips/${id}/verdict`, { method: "POST", body: JSON.stringify({ verdict }) }); clipSig = ""; refreshClips(); } catch (e) { toast(e.message); } }
 async function delClip(id) { await api(`/api/clips/${id}`, { method: "DELETE" }); refreshClips(); }
 
 (async () => {
   cfg = await api("/api/config");
+  const on = v => v ? "<b>on</b>" : "off";
+  $("#banner").innerHTML = `<span>Claude check: ${cfg.classifier ? `<b>on</b> (${esc(cfg.classifier_model)})` : "off (set ANTHROPIC_API_KEY)"}</span>
+    <span>Transcription: ${on(cfg.transcribe)}</span><span>Audio: ${on(cfg.audio)}</span>
+    <span>Rejects: ${esc(cfg.reject_categories.join(", "))}</span>
+    <span>Rejected videos deleted after ${cfg.rejected_keep_hours}h</span>`;
   await refreshStreams(); await refreshClips();
   setInterval(refreshStreams, 2000); setInterval(refreshClips, 2500);
 })();

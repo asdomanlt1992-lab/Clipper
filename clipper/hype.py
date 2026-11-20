@@ -19,6 +19,7 @@ class HypeEvent:
     score: float  # rate / baseline
     messages: int
     top_words: list[str]
+    mood: float = 0.0  # -1 (chat is negative) .. +1 (chat is hyped)
 
 
 _WORD = re.compile(r"[\w']+", re.UNICODE)
@@ -34,6 +35,7 @@ class HypeDetector:
         cooldown: float = 60.0,
         warmup: float = 60.0,
         keywords: list[str] | None = None,
+        negative_keywords: list[str] | None = None,
         keyword_weight: float = 2.0,
         baseline_floor: float = 0.2,
     ):
@@ -45,19 +47,34 @@ class HypeDetector:
         self.warmup = warmup
         self.keyword_weight = keyword_weight
         self.baseline_floor = baseline_floor  # msgs/sec; keeps dead chats from triggering on 3 msgs
-        kws = [k.lower() for k in (keywords or [])]
-        self._single = {k for k in kws if " " not in k}
-        self._phrases = [k for k in kws if " " in k]
+        self._pos = self._compile(keywords)
+        self._neg = self._compile(negative_keywords)
         self._events: deque[tuple[float, float, str]] = deque()  # (ts, weight, text)
         self._started: float | None = None
         self._last_trigger: float = float("-inf")
 
-    def weight(self, text: str) -> float:
+    @staticmethod
+    def _compile(keywords: list[str] | None) -> tuple[set[str], list[str]]:
+        kws = [k.lower() for k in (keywords or [])]
+        return {k for k in kws if " " not in k}, [k for k in kws if " " in k]
+
+    @staticmethod
+    def _matches(text: str, compiled: tuple[set[str], list[str]]) -> bool:
         low = text.lower()
-        words = set(_WORD.findall(low))
-        if words & self._single or any(p in low for p in self._phrases):
-            return self.keyword_weight
-        return 1.0
+        single, phrases = compiled
+        return bool(set(_WORD.findall(low)) & single) or any(p in low for p in phrases)
+
+    def weight(self, text: str) -> float:
+        return self.keyword_weight if self._matches(text, self._pos) else 1.0
+
+    def mood(self, now: float) -> float:
+        """Positive vs negative keyword balance in the recent window, -1..1 (0 = neutral/unknown)."""
+        pos = neg = 0
+        for ts, _, text in self._events:
+            if ts > now - self.window:
+                pos += self._matches(text, self._pos)
+                neg += self._matches(text, self._neg)
+        return (pos - neg) / (pos + neg) if pos + neg else 0.0
 
     def feed(self, ts: float, text: str) -> None:
         if self._started is None:
@@ -105,6 +122,7 @@ class HypeDetector:
             score=rate / effective,
             messages=n,
             top_words=self._top_words(now),
+            mood=self.mood(now),
         )
 
     def _top_words(self, now: float, k: int = 3) -> list[str]:

@@ -8,22 +8,70 @@ chat goes off (Twitch, YouTube Live and Kick).
 
 ```
 streamlink ──► ffmpeg (stream copy) ──► 2s .ts segments (rolling buffer, default 180s)
-                                               │
- Twitch / YouTube / Kick chat ──► hype detector ┤──► concat segments ──► clips/*.mp4 + thumbnail
-                         ✂ button / API ───────┘
+                                               │                 │
+                                               │       loudness per segment (audio monitor)
+                                               ▼                 ▼
+ Twitch / YouTube / Kick chat ──► spike + mood ──► score 0-100 ──► gate ──► cut clip
+                                                                            │
+                     transcribe (faster-whisper) ──► Claude classifier ──► keep / reject
 ```
 
-- **Recording**: `streamlink` pulls the stream and `ffmpeg` splits it into short segments without
-  re-encoding, so the CPU cost stays low. Segments older than the buffer get deleted.
-- **Clipping**: the segments covering `[t - pre, t + post]` are joined into an MP4. It waits for
-  the post-roll before cutting.
-- **Auto-highlights**: it reads the stream's live chat anonymously (no login needed) and compares the
-  message rate over the last 10s with the 5-minute baseline. Messages containing hype keywords
-  (`pog`, `kekw`, `clip`, `no way`, …) count double. When the recent rate passes
-  `multiplier × baseline` (and at least `min_messages` arrive in the window), it saves a clip
-  covering the 30s before and 10s after. A cooldown stops repeat clips of the same moment.
-- Any site streamlink supports can be recorded and clipped manually. Auto-clipping needs a chat
-  reader:
+It runs on its own: moments are detected, cut, checked, and either kept or rejected without
+anyone watching. You can still override any decision on the web page.
+
+### 1. Moment detection
+
+- **Chat spike**: it reads the stream's live chat anonymously (no login needed). When the
+  message rate over the last 10s passes `multiplier × the 5-minute baseline`, that's a moment.
+  Messages with hype words (`pog`, `kekw`, `no way`, …) count double.
+- **Chat mood**: positive hype words are weighed against negative ones (`cringe`, `yikes`,
+  `chill`, `calm down`, `mods`, …). A spike where chat is mostly negative is skipped. That catches
+  a streamer yelling at chat, where chat reacts with "bro chill".
+- **Audio**: the loudness of every segment is measured against the stream's normal level. On
+  streams with chat, loudness only adds to the score and never triggers a clip by itself. On sites
+  with no chat reader, a big audio spike can trigger a clip, but only when the Claude check is on to
+  filter out bad ones (`CLIPPER_AUDIO_ONLY=auto`).
+
+### 2. Score (0-100)
+
+| Part | Points | Full marks when |
+|---|---|---|
+| Chat spike | up to 50 | chat hits 2× the trigger multiplier |
+| Chat mood | up to 25 | all hype words (12.5 = neutral, 0 = all negative) |
+| Audio | up to 25 | +12 dB over normal |
+
+Moments below `MIN_SCORE` (30) aren't cut at all.
+
+### 3. Analysis and verdict
+
+After cutting, each clip is:
+
+1. **Transcribed** locally with faster-whisper (if installed, which the Docker image does).
+2. **Classified by Claude** (if `ANTHROPIC_API_KEY` is set). Claude gets 3 frames, the transcript
+   and the chat from that moment, and returns a category (`highlight`, `skill`, `funny`, `fail`,
+   `wholesome`, `rage`, `argument`, `technical`, `offtopic`, `sensitive`), keep yes/no, a title and
+   a one-line summary.
+3. **Given a verdict**:
+   - with Claude: rejected if the category is in `REJECT_CATEGORIES` (default
+     `rage,argument,technical,offtopic,sensitive`) or Claude says don't keep; kept otherwise.
+     If Claude declines to review a clip, it's rejected.
+   - without Claude, or if the call fails: kept if score ≥ `APPROVE_SCORE` (50), else rejected.
+   - manual clips are always kept.
+
+Rejected clips stay visible (with the reason) for `REJECTED_KEEP_HOURS` (24), then their video is
+deleted. Set `CLIPPER_REVIEW_UNCERTAIN=true` to send low-confidence calls to a "Needs review" tab
+instead of deciding.
+
+**Cost**: one Claude Opus 5.5 call per auto clip at low effort (3 small images + transcript + chat),
+roughly a cent each. Server-side refusal fallback is on, so a refused request is retried on another
+model automatically.
+
+### Recording
+
+- `streamlink` pulls the stream and `ffmpeg` splits it into short segments without re-encoding,
+  so the CPU cost stays low. Clips are the segments covering `[t - pre, t + post]`, joined into an
+  MP4.
+- Any site streamlink supports can be recorded and clipped manually. Chat readers:
 
   | Platform | URL forms | How chat is read |
   |---|---|---|
@@ -32,20 +80,22 @@ streamlink ──► ffmpeg (stream copy) ──► 2s .ts segments (rolling buf
   | Kick | `kick.com/<channel>` | Kick's public Pusher websocket |
 
   The YouTube and Kick readers use unofficial endpoints, so they can break if the sites change.
-  Kick's channel lookup (`kick.com/api/v2/channels/<name>`) is sometimes blocked by Cloudflare. If
-  that happens, set `CLIPPER_KICK_CHATROOM_<NAME>=<chatroom id>` to skip the lookup. If Kick changes
-  its Pusher key, override it with `CLIPPER_KICK_PUSHER_KEY` / `CLIPPER_KICK_PUSHER_CLUSTER`.
+  Kick's channel lookup is sometimes blocked by Cloudflare. If that happens, set
+  `CLIPPER_KICK_CHATROOM_<NAME>=<chatroom id>`. If Kick changes its Pusher key, override it with
+  `CLIPPER_KICK_PUSHER_KEY` / `CLIPPER_KICK_PUSHER_CLUSTER`.
 
 ## Run
 
 ### Docker
 
 ```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # optional: enables the Claude check
 docker compose up -d --build
 # open http://localhost:8000
 ```
 
-Clips are written to `./data/clips`.
+Clips are written to `./data/clips`. The Whisper model downloads on the first clip and is cached
+in `./data/models`.
 
 ### Local
 
@@ -53,7 +103,8 @@ Requires Python 3.10+ and `ffmpeg` on `PATH` (streamlink is installed as a depen
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e '.[ai,dev]'   # drop "ai" to skip Claude + transcription
+export ANTHROPIC_API_KEY=sk-ant-...   # optional
 clipper            # or: python -m clipper
 ```
 
@@ -72,6 +123,7 @@ To try it without a real stream, use a synthetic source: `lavfi:testsrc=size=640
 | DELETE | `/api/streams/{id}` | – |
 | POST | `/api/streams/{id}/clip` | `{"pre": 30, "post": 5, "title": "..."}` |
 | GET | `/api/clips` | – |
+| POST | `/api/clips/{id}/verdict` | `{"verdict": "approved" \| "rejected"}` |
 | DELETE | `/api/clips/{id}` | – |
 
 Clip files are served from `/media/<file>`. Watched streams are saved in `data/streams.json` and
@@ -101,7 +153,23 @@ curl -XPOST localhost:8000/api/streams/<id>/clip -H 'content-type: application/j
 | `CLIPPER_HYPE_MIN_MESSAGES` | `15` | Minimum messages in window to trigger |
 | `CLIPPER_HYPE_COOLDOWN` | `60` | Seconds between auto clips |
 | `CLIPPER_HYPE_WARMUP` | `60` | Seconds of chat before auto clips start |
-| `CLIPPER_HYPE_KEYWORDS` | `clip,pog,…` | Comma-separated words that count double |
+| `CLIPPER_HYPE_KEYWORDS` | `clip,pog,…` | Positive words (count double, raise mood) |
+| `CLIPPER_HYPE_NEGATIVE_KEYWORDS` | `yikes,cringe,…` | Negative words (lower mood) |
+| `CLIPPER_MIN_SCORE` | `30` | Moments below this aren't cut |
+| `CLIPPER_MOOD_SKIP` | `-0.5` | Skip chat spikes with mood at or below this (-1..1) |
+| `CLIPPER_APPROVE_SCORE` | `50` | Keep threshold when Claude isn't available |
+| `CLIPPER_REVIEW_UNCERTAIN` | `false` | Send borderline calls to "Needs review" |
+| `CLIPPER_REJECTED_KEEP_HOURS` | `24` | Delete rejected videos after this (0 = right away) |
+| `CLIPPER_AUDIO` | `true` | Track loudness |
+| `CLIPPER_AUDIO_TRIGGER_DB` | `10` | dB above normal for an audio-only trigger |
+| `CLIPPER_AUDIO_ONLY` | `auto` | Audio-only triggers on chatless sites: `auto` (only with Claude), `on`, `off` |
+| `CLIPPER_TRANSCRIBE` | `auto` | `auto` (if faster-whisper is installed), `on`, `off` |
+| `CLIPPER_WHISPER_MODEL` | `base` | `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, `auto` |
+| `CLIPPER_CLASSIFIER` | `auto` | `auto` (if `ANTHROPIC_API_KEY` is set), `on`, `off` |
+| `CLIPPER_CLAUDE_MODEL` | `claude-opus-5-5` | Model for the clip check |
+| `CLIPPER_CLAUDE_EFFORT` | `low` | `low`, `medium`, `high` |
+| `CLIPPER_REJECT_CATEGORIES` | `rage,argument,technical,offtopic,sensitive` | Categories that are always rejected |
 
 ## Tests
 
@@ -109,5 +177,6 @@ curl -XPOST localhost:8000/api/streams/<id>/clip -H 'content-type: application/j
 pytest
 ```
 
-The integration test runs a synthetic ffmpeg stream, injects a chat burst, and checks that an auto
-clip is cut.
+The integration tests run a synthetic ffmpeg stream with fake chat and check three things: a hype
+burst gets kept, a negative burst gets skipped, and a rage clip gets rejected by a mocked Claude
+check.

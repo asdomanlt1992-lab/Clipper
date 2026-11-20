@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -27,12 +28,23 @@ class Clip:
     created_at: float
     pre: float
     post: float
-    status: str = "pending"  # pending | ready | failed
+    status: str = "pending"  # pending | analyzing | ready | failed
     error: str = ""
     duration: float = 0.0
     file: str = ""
     thumb: str = ""
     meta: dict = field(default_factory=dict)
+    score: float = 0.0
+    verdict: str = ""  # approved | rejected | review
+    verdict_reason: str = ""
+    category: str = ""
+    summary: str = ""
+    transcript: str = ""
+    purged: bool = False  # video deleted (rejected clips after the retention period)
+
+
+# Called after cutting: (clip, video path) -> None. Sets verdict/category/etc. on the clip.
+Analyzer = Callable[["Clip", Path], Awaitable[None]]
 
 
 class ClipLibrary:
@@ -49,7 +61,7 @@ class ClipLibrary:
         try:
             for raw in json.loads(self.index_path.read_text()):
                 clip = Clip(**raw)
-                if clip.status == "pending":
+                if clip.status in ("pending", "analyzing"):
                     clip.status, clip.error = "failed", "interrupted by restart"
                 self.clips[clip.id] = clip
         except Exception:  # noqa: BLE001
@@ -73,21 +85,46 @@ class ClipLibrary:
         self.save()
         return True
 
+    def set_verdict(self, clip_id: str, verdict: str) -> Clip:
+        clip = self.clips[clip_id]
+        if verdict == "approved" and clip.purged:
+            raise ValueError("the video was already deleted")
+        clip.verdict, clip.verdict_reason = verdict, "set by hand"
+        self.save()
+        return clip
+
+    def purge_rejected(self, keep_hours: float) -> int:
+        """Delete video files of rejected clips older than keep_hours; keep their metadata."""
+        cutoff = time.time() - keep_hours * 3600
+        n = 0
+        for clip in self.clips.values():
+            if clip.verdict == "rejected" and not clip.purged and clip.created_at <= cutoff:
+                for name in (clip.file, clip.thumb):
+                    if name:
+                        (self.dir / name).unlink(missing_ok=True)
+                clip.file = clip.thumb = ""
+                clip.purged = True
+                n += 1
+        if n:
+            self.save()
+        return n
+
     def request(self, recorder: Recorder, *, stream_id: str, channel: str, title: str,
                 reason: str, detail: str, pre: float, post: float,
-                at: float | None = None, meta: dict | None = None) -> Clip:
+                at: float | None = None, meta: dict | None = None, score: float = 0.0,
+                analyzer: Analyzer | None = None) -> Clip:
         now = at if at is not None else time.time()
         clip = Clip(
             id=time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + "-" + uuid.uuid4().hex[:6],
             stream_id=stream_id, channel=channel, title=title, reason=reason,
-            detail=detail, created_at=now, pre=pre, post=post, meta=meta or {},
+            detail=detail, created_at=now, pre=pre, post=post, meta=meta or {}, score=score,
         )
         self.clips[clip.id] = clip
         self.save()
-        asyncio.create_task(self._cut(recorder, clip))
+        asyncio.create_task(self._cut(recorder, clip, analyzer))
         return clip
 
-    async def _cut(self, recorder: Recorder, clip: Clip) -> None:
+    async def _cut(self, recorder: Recorder, clip: Clip, analyzer: Analyzer | None = None) -> None:
         try:
             start, end = clip.created_at - clip.pre, clip.created_at + clip.post
             # Wait until the post-roll has been written (plus one segment to close).
@@ -104,8 +141,14 @@ class ClipLibrary:
             clip.file = out.name
             clip.thumb = thumb.name if thumb.exists() else ""
             clip.duration = await probe_duration(out)
+            if analyzer:
+                clip.status = "analyzing"
+                self.save()
+                await analyzer(clip, out)
+            if not clip.verdict:
+                clip.verdict = "approved" if clip.reason == "manual" else "review"
             clip.status = "ready"
-            log.info("clip %s ready (%.1fs)", clip.id, clip.duration)
+            log.info("clip %s ready (%.1fs, %s)", clip.id, clip.duration, clip.verdict)
         except Exception as exc:  # noqa: BLE001
             clip.status, clip.error = "failed", str(exc)
             log.warning("clip %s failed: %s", clip.id, exc)

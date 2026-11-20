@@ -15,6 +15,10 @@ def _env(name: str, default, cast=str):
     return cast(raw)
 
 
+def _csv(name: str, default: str) -> list[str]:
+    return [k.strip().lower() for k in _env(name, default).split(",") if k.strip()]
+
+
 @dataclass
 class Settings:
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "data")))
@@ -45,11 +49,58 @@ class Settings:
             k.strip().lower()
             for k in _env(
                 "HYPE_KEYWORDS",
-                "clip,pog,poggers,pogchamp,lul,lol,kekw,omegalul,wtf,omg,holy,insane,no way,w,lmao",
+                "clip,clip it,pog,poggers,pogchamp,lul,lol,kekw,omegalul,omg,holy,insane,no way,w,lmao,goat,clutch,hype",
             ).split(",")
             if k.strip()
         ]
     )
+
+    hype_negative_keywords: list[str] = field(
+        default_factory=lambda: _csv(
+            "HYPE_NEGATIVE_KEYWORDS",
+            "yikes,cringe,l,ratio,ban,banned,mods,report,reported,toxic,chill,calm down,relax,"
+            "stop yelling,bro chill,awkward,sad,rip,f,not okay,cancelled,weirdchamp,monkas,unsub",
+        )
+    )
+
+    # Scoring and the decision gate (0-100 score; see clipper/scoring.py)
+    min_score: float = field(default_factory=lambda: _env("MIN_SCORE", 30.0, float))
+    approve_score: float = field(default_factory=lambda: _env("APPROVE_SCORE", 50.0, float))
+    mood_skip: float = field(default_factory=lambda: _env("MOOD_SKIP", -0.5, float))
+    review_uncertain: bool = field(default_factory=lambda: _env("REVIEW_UNCERTAIN", False, bool))
+    rejected_keep_hours: float = field(default_factory=lambda: _env("REJECTED_KEEP_HOURS", 24.0, float))
+
+    # Audio
+    audio: bool = field(default_factory=lambda: _env("AUDIO", True, bool))
+    audio_trigger_db: float = field(default_factory=lambda: _env("AUDIO_TRIGGER_DB", 10.0, float))
+    audio_only: str = field(default_factory=lambda: _env("AUDIO_ONLY", "auto"))  # auto | on | off
+
+    # Transcription (faster-whisper, local)
+    transcribe: str = field(default_factory=lambda: _env("TRANSCRIBE", "auto"))  # auto | on | off
+    whisper_model: str = field(default_factory=lambda: _env("WHISPER_MODEL", "base"))
+    whisper_device: str = field(default_factory=lambda: _env("WHISPER_DEVICE", "auto"))
+
+    # Claude classifier
+    classifier: str = field(default_factory=lambda: _env("CLASSIFIER", "auto"))  # auto | on | off
+    claude_model: str = field(default_factory=lambda: _env("CLAUDE_MODEL", "claude-opus-5-5"))
+    claude_effort: str = field(default_factory=lambda: _env("CLAUDE_EFFORT", "low"))
+    reject_categories: list[str] = field(
+        default_factory=lambda: _csv("REJECT_CATEGORIES", "rage,argument,technical,offtopic,sensitive")
+    )
+
+    @property
+    def classifier_enabled(self) -> bool:
+        if self.classifier == "off":
+            return False
+        if self.classifier == "on":
+            return True
+        return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+    @property
+    def audio_only_enabled(self) -> bool:
+        if not self.audio or self.audio_only == "off":
+            return False
+        return self.audio_only == "on" or self.classifier_enabled
 
     @property
     def clips_dir(self) -> Path:

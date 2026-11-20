@@ -1,9 +1,11 @@
 """FastAPI app: REST API + single-page UI."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
+from typing import Literal
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -13,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import analysis
 from .clips import ClipLibrary
 from .config import Settings
 from .streams import StreamManager
@@ -31,6 +34,10 @@ class AddStream(BaseModel):
 class UpdateStream(BaseModel):
     auto: bool | None = None
     multiplier: float | None = Field(default=None, gt=1.0, le=20.0)
+
+
+class VerdictRequest(BaseModel):
+    verdict: Literal["approved", "rejected"]
 
 
 class ClipRequest(BaseModel):
@@ -61,7 +68,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     manager.add(s["url"], s.get("quality"), s.get("auto", True), s.get("multiplier"))
             except Exception:  # noqa: BLE001
                 log.exception("could not restore streams")
+        async def purge_loop():
+            while True:
+                try:
+                    n = library.purge_rejected(settings.rejected_keep_hours)
+                    if n:
+                        log.info("deleted video for %d rejected clips", n)
+                except Exception:  # noqa: BLE001
+                    log.exception("purge failed")
+                await asyncio.sleep(60)
+
+        purge = asyncio.create_task(purge_loop())
+        log.info("classifier: %s, transcription: %s, audio-only triggers: %s",
+                 "on" if settings.classifier_enabled else "off (no Anthropic credentials)",
+                 "on" if settings.transcribe != "off" and analysis.whisper_available() else "off",
+                 "on" if settings.audio_only_enabled else "off")
         yield
+        purge.cancel()
         await manager.shutdown()
 
     app = FastAPI(title="Clipper", lifespan=lifespan)
@@ -78,7 +101,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"buffer_seconds": settings.buffer_seconds,
                 "manual_pre": settings.manual_pre, "manual_post": settings.manual_post,
                 "auto_pre": settings.auto_pre, "auto_post": settings.auto_post,
-                "multiplier": settings.hype_multiplier}
+                "multiplier": settings.hype_multiplier,
+                "classifier": settings.classifier_enabled,
+                "classifier_model": settings.claude_model if settings.classifier_enabled else "",
+                "transcribe": settings.transcribe != "off" and analysis.whisper_available(),
+                "audio": settings.audio, "audio_only": settings.audio_only_enabled,
+                "approve_score": settings.approve_score, "min_score": settings.min_score,
+                "reject_categories": settings.reject_categories,
+                "rejected_keep_hours": settings.rejected_keep_hours}
 
     @app.get("/api/streams")
     def list_streams():
@@ -120,6 +150,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/clips")
     def list_clips():
         return [asdict(c) for c in library.list()]
+
+    @app.post("/api/clips/{clip_id}/verdict")
+    def set_verdict(clip_id: str, body: VerdictRequest):
+        if clip_id not in library.clips:
+            raise HTTPException(404, "clip not found")
+        try:
+            return asdict(library.set_verdict(clip_id, body.verdict))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.delete("/api/clips/{clip_id}", status_code=204)
     def delete_clip(clip_id: str):

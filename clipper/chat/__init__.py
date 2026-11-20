@@ -20,6 +20,15 @@ class ChatSource:
 
 def chat_source_for(url: str) -> ChatSource | None:
     """Pick a chat reader for a stream URL, or None if the site has no chat support."""
+    if url.startswith(("lavfi:", "direct:")):
+        return None
+    try:
+        return _detect(url)
+    except ValueError:  # unparseable URL
+        return None
+
+
+def _detect(url: str) -> ChatSource | None:
     if ch := twitch.twitch_channel(url):
         return ChatSource("twitch", ch, lambda m, s: twitch.run_twitch_chat(ch, m, s))
     if target := youtube.youtube_target(url):

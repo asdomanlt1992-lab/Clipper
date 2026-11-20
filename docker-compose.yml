@@ -6,6 +6,9 @@ services:
     volumes:
       - ./data:/data
     environment:
+      # Turns on the Claude check that keeps or rejects each auto clip.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLIPPER_BUFFER_SECONDS: "180"
       CLIPPER_HYPE_MULTIPLIER: "3"
+      CLIPPER_WHISPER_MODEL: "base"
     restart: unless-stopped

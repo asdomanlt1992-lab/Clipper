@@ -1,4 +1,4 @@
-"""A watched stream = recorder + optional chat listener + hype detector."""
+"""A watched stream = recorder + chat listener + audio monitor + hype detector + auto-clipper."""
 from __future__ import annotations
 
 import asyncio
@@ -6,12 +6,16 @@ import logging
 import time
 import uuid
 from collections import deque
+from pathlib import Path
 
+from . import analysis
+from .audio import AudioMonitor
 from .chat import chat_source_for
-from .clips import ClipLibrary
+from .clips import Clip, ClipLibrary
 from .config import Settings
 from .hype import HypeDetector
 from .recorder import Recorder
+from .scoring import score_moment
 
 log = logging.getLogger(__name__)
 
@@ -30,10 +34,12 @@ class WatchedStream:
         self.channel = self.chat.channel if self.chat else ""
         self.name = self.channel or url
         self.created_at = time.time()
-        self.chat_status = "n/a" if not self.channel else "idle"
+        self.chat_status = "n/a" if not self.chat else "idle"
         self.messages_total = 0
+        self.chat_log: deque[tuple[float, str, str]] = deque(maxlen=2000)  # (ts, user, text)
         self.rate_history: deque[tuple[float, float, float]] = deque(maxlen=180)  # (ts, rate, baseline)
         self.hype_events: deque[dict] = deque(maxlen=50)
+        self._last_audio_trigger = float("-inf")
         self.detector = HypeDetector(
             window=settings.hype_window,
             baseline=settings.hype_baseline,
@@ -42,67 +48,142 @@ class WatchedStream:
             cooldown=settings.hype_cooldown,
             warmup=settings.hype_warmup,
             keywords=settings.hype_keywords,
+            negative_keywords=settings.hype_negative_keywords,
         )
         self.recorder = Recorder(
             url, quality, settings.buffer_dir / self.id,
             settings.segment_seconds, settings.buffer_seconds, settings.reconnect_seconds,
         )
+        self.audio = AudioMonitor(self.recorder, settings.hype_baseline)
         self._tasks: list[asyncio.Task] = []
 
+    # ---------------------------------------------------------------- lifecycle
     def start(self) -> None:
         self.recorder.start()
+        if self.settings.audio:
+            self.audio.start()
         if self.chat:
             self._tasks.append(asyncio.create_task(
                 self.chat.run(self._on_message, self._on_chat_status)))
-            self._tasks.append(asyncio.create_task(self._hype_loop()))
+        self._tasks.append(asyncio.create_task(self._hype_loop()))
 
     async def stop(self) -> None:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        await self.audio.stop()
         await self.recorder.stop()
 
     def _on_chat_status(self, status: str) -> None:
         self.chat_status = status
 
     def _on_message(self, user: str, text: str) -> None:
+        now = time.time()
         self.messages_total += 1
-        self.detector.feed(time.time(), text)
+        self.chat_log.append((now, user, text))
+        self.detector.feed(now, text)
 
+    def chat_between(self, start: float, end: float) -> list[str]:
+        return [f"[{ts - start:5.1f}s] {u}: {t}" for ts, u, t in self.chat_log if start <= ts <= end]
+
+    # ---------------------------------------------------------------- detection
     async def _hype_loop(self) -> None:
         while True:
             await asyncio.sleep(1)
-            now = time.time()
+            try:
+                self._tick(time.time())
+            except Exception:  # noqa: BLE001
+                log.exception("hype loop error on %s", self.name)
+
+    def _tick(self, now: float) -> None:
+        if self.chat:
             rate, baseline, _ = self.detector.stats(now)
             self.rate_history.append((now, round(rate, 2), round(baseline, 2)))
             event = self.detector.check(now)
-            if not event:
-                continue
-            words = ", ".join(event.top_words)
-            info = {"at": now, "score": round(event.score, 1), "rate": round(event.rate, 1),
-                    "baseline": round(event.baseline, 2), "words": event.top_words, "clip_id": None}
-            log.info("hype on %s: x%.1f (%s)", self.name, event.score, words)
-            if self.auto and self.recorder.status == "live":
-                # The spike is detected a few seconds after the moment; pre-roll covers it.
-                clip = self.library.request(
-                    self.recorder, stream_id=self.id, channel=self.name,
-                    title=f"{self.name}: chat x{event.score:.1f}" + (f" ({words})" if words else ""),
-                    reason="auto", detail=f"chat spike x{event.score:.1f}, {event.messages} msgs/{self.detector.window:.0f}s",
-                    pre=self.settings.auto_pre, post=self.settings.auto_post, at=now,
-                    meta=info,
-                )
-                info["clip_id"] = clip.id
-            self.hype_events.appendleft(info)
+            if event:
+                audio_db = self.audio.boost(now - self.detector.window, now)
+                self._on_moment(now, "chat", event.score, event.mood, audio_db, event.top_words,
+                                f"chat spike x{event.score:.1f}, {event.messages} msgs/"
+                                f"{self.detector.window:.0f}s")
+        elif self.settings.audio_only_enabled:
+            boost = self.audio.latest_boost()
+            if boost >= self.settings.audio_trigger_db and \
+                    now - self._last_audio_trigger >= self.settings.hype_cooldown:
+                self._last_audio_trigger = now
+                self._on_moment(now, "audio", 0.0, 0.0, boost, [], f"audio spike +{boost:.0f} dB")
+
+    def _on_moment(self, now: float, source: str, spike: float, mood: float, audio_db: float,
+                   words: list[str], detail: str) -> None:
+        s = score_moment(spike, self.detector.multiplier, mood, audio_db)
+        info = {"at": now, "source": source, "score": s["score"], "breakdown": s,
+                "words": words, "detail": detail, "clip_id": None, "skipped": ""}
+        # Gate before cutting. Audio-only moments skip the score gate: the classifier decides.
+        if source == "chat" and mood <= self.settings.mood_skip:
+            info["skipped"] = f"chat mood negative ({mood:+.2f})"
+        elif source == "chat" and s["score"] < self.settings.min_score:
+            info["skipped"] = f"score {s['score']:.0f} < {self.settings.min_score:.0f}"
+        elif not self.auto:
+            info["skipped"] = "auto-clipping off"
+        elif self.recorder.status != "live":
+            info["skipped"] = "stream not live"
+        log.info("moment on %s: %s score=%.0f %s", self.name, detail, s["score"],
+                 f"(skipped: {info['skipped']})" if info["skipped"] else "")
+        if not info["skipped"]:
+            title_words = f" ({', '.join(words)})" if words else ""
+            clip = self.library.request(
+                self.recorder, stream_id=self.id, channel=self.name,
+                title=f"{self.name}: {detail.split(',')[0]}{title_words}",
+                reason="auto", detail=detail,
+                pre=self.settings.auto_pre, post=self.settings.auto_post, at=now,
+                meta=info, score=s["score"], analyzer=self._analyze,
+            )
+            info["clip_id"] = clip.id
+        self.hype_events.appendleft(info)
+
+    # ---------------------------------------------------------------- analysis
+    async def _analyze(self, clip: Clip, video: Path) -> None:
+        try:
+            context = {
+                "platform": self.platform, "channel": self.name,
+                "trigger": clip.detail or "manual clip by the operator",
+                "duration": clip.duration,
+                "score": clip.meta.get("breakdown", {}),
+                "chat": self.chat_between(clip.created_at - clip.pre, clip.created_at + clip.post),
+            }
+            result = await analysis.analyze(video, clip.duration, context, self.settings)
+            clip.transcript = result.transcript
+            if result.classification:
+                cls = result.classification
+                clip.category = cls.get("category", "")
+                clip.summary = cls.get("summary", "")
+                if cls.get("title"):
+                    clip.title = cls["title"]
+                clip.meta["classification"] = cls
+            if result.errors:
+                clip.meta["analysis_errors"] = result.errors
+            clip.verdict, clip.verdict_reason = analysis.decide(
+                clip.reason, clip.score, result, self.settings)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("analysis failed for %s", clip.id)
+            clip.meta["analysis_errors"] = [str(exc)]
+            clip.verdict, clip.verdict_reason = analysis.decide(
+                clip.reason, clip.score, analysis.Analysis(), self.settings)
 
     def clip(self, pre: float, post: float, title: str = ""):
+        now = time.time()
+        audio_db = self.audio.boost(now - 10, now)
         return self.library.request(
             self.recorder, stream_id=self.id, channel=self.name,
             title=title or f"{self.name}: manual clip", reason="manual", detail="",
-            pre=pre, post=post,
+            pre=pre, post=post, at=now, analyzer=self._analyze,
+            meta={"breakdown": score_moment(0, self.detector.multiplier,
+                                            self.detector.mood(now), audio_db)},
         )
 
+    # ---------------------------------------------------------------- api view
     def to_dict(self) -> dict:
-        rate, baseline, _ = self.detector.stats(time.time()) if self.channel else (0, 0, 0)
+        now = time.time()
+        rate, baseline, _ = self.detector.stats(now) if self.chat else (0, 0, 0)
         return {
             "id": self.id, "url": self.url, "name": self.name, "channel": self.channel,
             "platform": self.platform,
@@ -112,6 +193,10 @@ class WatchedStream:
             "buffered": round(self.recorder.buffered_seconds(), 1),
             "chat_status": self.chat_status, "messages": self.messages_total,
             "rate": round(rate, 2), "baseline": round(baseline, 2),
+            "mood": round(self.detector.mood(now), 2) if self.chat else 0,
+            "has_audio": self.audio.has_audio,
+            "audio_db": round(self.audio.latest_boost(), 1),
+            "audio_only": not self.chat and self.settings.audio_only_enabled,
             "history": [[round(r, 2), round(b, 2)] for _, r, b in self.rate_history],
             "hype_events": list(self.hype_events)[:10],
         }

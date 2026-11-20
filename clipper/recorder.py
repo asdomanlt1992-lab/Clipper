@@ -45,6 +45,7 @@ def build_source_cmds(url: str, quality: str) -> tuple[list[str] | None, list[st
 
     Prefixes for testing / non-streamlink sources:
       lavfi:<graph>   ffmpeg synthetic source, e.g. lavfi:testsrc=size=640x360:rate=30
+                      (with audio: lavfi:testsrc=size=640x360:rate=30[out0];sine=f=440[out1])
       direct:<url>    read the URL/file directly with ffmpeg
     """
     if url.startswith("lavfi:"):
@@ -137,7 +138,8 @@ class Recorder:
             # Synthetic sources must be encoded, not stream-copied.
             i = ff_cmd.index("-c")
             ff_cmd[i:i + 2] = ["-c:v", "libx264", "-preset", "veryfast", "-g",
-                               str(int(30 * self.segment_seconds)), "-pix_fmt", "yuv420p"]
+                               str(int(30 * self.segment_seconds)), "-pix_fmt", "yuv420p",
+                               "-c:a", "aac"]
         self.status = "starting"
         if sl_cmd:
             r, w = os.pipe()
