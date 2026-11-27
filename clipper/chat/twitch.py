@@ -1,4 +1,7 @@
-"""Anonymous read-only Twitch chat client (IRC over TCP)."""
+"""Anonymous read-only Twitch chat client (IRC over Twitch's WebSocket endpoint).
+
+WebSocket on port 443 goes through HTTPS proxies and strict firewalls, unlike raw IRC on 6667.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +10,13 @@ import random
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
+import websockets
+
 from ._util import deliver
 
 log = logging.getLogger(__name__)
 
-TWITCH_HOST = "irc.chat.twitch.tv"
-TWITCH_PORT = 6667
+TWITCH_WS = "wss://irc-ws.chat.twitch.tv:443"
 
 
 def twitch_channel(url: str) -> str | None:
@@ -48,24 +52,28 @@ async def run_twitch_chat(
     while True:
         try:
             on_status("connecting")
-            reader, writer = await asyncio.open_connection(TWITCH_HOST, TWITCH_PORT)
             nick = f"justinfan{random.randint(10000, 99999)}"
-            writer.write(f"PASS SCHMOOPIIE\r\nNICK {nick}\r\nJOIN #{channel}\r\n".encode())
-            await writer.drain()
-            on_status("connected")
-            backoff = 2.0
-            while True:
-                raw = await asyncio.wait_for(reader.readline(), timeout=360)
-                if not raw:
-                    raise ConnectionError("chat connection closed")
-                line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                if line.startswith("PING"):
-                    writer.write(("PONG" + line[4:] + "\r\n").encode())
-                    await writer.drain()
-                    continue
-                parsed = parse_privmsg(line)
-                if parsed:
-                    await deliver(on_message, *parsed)
+            async with websockets.connect(TWITCH_WS, open_timeout=20, ping_interval=60) as ws:
+                await ws.send("PASS SCHMOOPIIE")
+                await ws.send(f"NICK {nick}")
+                await ws.send(f"JOIN #{channel}")
+                on_status("connected")
+                backoff = 2.0
+                while True:
+                    frame = await asyncio.wait_for(ws.recv(), timeout=360)
+                    if isinstance(frame, bytes):
+                        frame = frame.decode("utf-8", "replace")
+                    for line in frame.split("\r\n"):  # one frame can hold several IRC lines
+                        if not line:
+                            continue
+                        if line.startswith("PING"):
+                            await ws.send("PONG" + line[4:])
+                            continue
+                        if " RECONNECT" in line[:60]:
+                            raise ConnectionError("Twitch asked us to reconnect")
+                        parsed = parse_privmsg(line)
+                        if parsed:
+                            await deliver(on_message, *parsed)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
