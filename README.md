@@ -168,8 +168,15 @@ Sign-in tokens are stored in `data/secrets/` (owner-only permissions). **Disconn
 
 ### Docker
 
+Keys go in a `.env` file next to `docker-compose.yml` (it's git-ignored), one per line:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+CLIPPER_YOUTUBE_CLIENT_ID=...
+CLIPPER_YOUTUBE_CLIENT_SECRET=...
+```
+
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # optional: enables the Claude check
 docker compose up -d --build
 # open http://localhost:8000
 ```
