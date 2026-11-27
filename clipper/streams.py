@@ -49,6 +49,7 @@ class WatchedStream:
             warmup=settings.hype_warmup,
             keywords=settings.hype_keywords,
             negative_keywords=settings.hype_negative_keywords,
+            baseline_floor=settings.hype_baseline_floor,
         )
         self.recorder = Recorder(
             url, quality, settings.buffer_dir / self.id,

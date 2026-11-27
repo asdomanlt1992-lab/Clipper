@@ -241,7 +241,8 @@ curl -XPOST localhost:8000/api/streams/<id>/clip -H 'content-type: application/j
 | `CLIPPER_HYPE_WINDOW` | `10` | Seconds of "recent" chat |
 | `CLIPPER_HYPE_BASELINE` | `300` | Seconds of baseline chat |
 | `CLIPPER_HYPE_MULTIPLIER` | `3` | Spike threshold (lower = more clips) |
-| `CLIPPER_HYPE_MIN_MESSAGES` | `15` | Minimum messages in window to trigger |
+| `CLIPPER_HYPE_MIN_MESSAGES` | `5` | Minimum messages in window to trigger (raise for big chats, e.g. 15-30) |
+| `CLIPPER_HYPE_BASELINE_FLOOR` | `0.1` | Lowest "normal" chat rate assumed (msgs/sec), so a near-silent chat needs a real burst |
 | `CLIPPER_HYPE_COOLDOWN` | `60` | Seconds between auto clips |
 | `CLIPPER_HYPE_WARMUP` | `60` | Seconds of chat before auto clips start |
 | `CLIPPER_HYPE_KEYWORDS` | `clip,pog,…` | Positive words (count double, raise mood) |

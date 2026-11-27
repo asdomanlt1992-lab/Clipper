@@ -43,7 +43,8 @@ class Settings:
     hype_window: float = field(default_factory=lambda: _env("HYPE_WINDOW", 10.0, float))
     hype_baseline: float = field(default_factory=lambda: _env("HYPE_BASELINE", 300.0, float))
     hype_multiplier: float = field(default_factory=lambda: _env("HYPE_MULTIPLIER", 3.0, float))
-    hype_min_messages: int = field(default_factory=lambda: _env("HYPE_MIN_MESSAGES", 15, int))
+    hype_min_messages: int = field(default_factory=lambda: _env("HYPE_MIN_MESSAGES", 5, int))
+    hype_baseline_floor: float = field(default_factory=lambda: _env("HYPE_BASELINE_FLOOR", 0.1, float))
     hype_cooldown: float = field(default_factory=lambda: _env("HYPE_COOLDOWN", 60.0, float))
     hype_warmup: float = field(default_factory=lambda: _env("HYPE_WARMUP", 60.0, float))
     hype_keywords: list[str] = field(
