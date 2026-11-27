@@ -25,6 +25,6 @@ def test_select_segments():
 
 def test_source_cmds():
     sl, ff = build_source_cmds("https://twitch.tv/x", "720p")
-    assert sl[0] == "streamlink" and "720p" in sl and ff == ["-i", "pipe:0"]
+    assert sl[1:3] == ["-m", "streamlink_cli"] and "720p" in sl and ff == ["-i", "pipe:0"]
     sl, ff = build_source_cmds("lavfi:testsrc", "best")
     assert sl is None and ff[-1] == "testsrc"

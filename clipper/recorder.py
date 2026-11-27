@@ -5,9 +5,12 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from .chat.youtube import resolve_watch_url, youtube_target
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ def build_source_cmds(url: str, quality: str) -> tuple[list[str] | None, list[st
     if url.startswith("direct:"):
         return None, ["-re", "-i", url[len("direct:"):]]
     streamlink = [
-        "streamlink", "--stdout", "--loglevel", "warning",
+        sys.executable, "-m", "streamlink_cli", "--stdout", "--loglevel", "warning",
         "--twitch-disable-ads", url, quality,
     ]
     return streamlink, ["-i", "pipe:0"]
@@ -121,7 +124,10 @@ class Recorder:
             await asyncio.sleep(self.reconnect_seconds)
 
     async def _run_once(self) -> None:
-        sl_cmd, ff_input = build_source_cmds(self.url, self.quality)
+        url = self.url
+        if not url.startswith(("lavfi:", "direct:")) and youtube_target(url):
+            url = await resolve_watch_url(url)  # channel links: find the live video each time
+        sl_cmd, ff_input = build_source_cmds(url, self.quality)
         # Continue numbering after any existing segments so names stay sorted.
         existing = sorted(self.buffer_dir.glob("seg_*.ts"))
         start_number = int(existing[-1].stem.split("_")[1]) + 1 if existing else 0

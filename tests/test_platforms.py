@@ -39,9 +39,29 @@ def test_youtube_parse_response():
             {"addChatItemAction": {"item": {"liveChatViewerEngagementMessageRenderer": {}}}},
             {"markChatItemAsDeletedAction": {}},
         ]}}}
-    msgs, nxt, wait = parse_chat_response(data)
-    assert msgs == [("alice", "no way :fire:")]
+    items, nxt, wait = parse_chat_response(data)
+    assert [(i["user"], i["text"]) for i in items] == [("alice", "no way :fire:")]
     assert nxt == "TOKEN2" and wait == 3.5
+
+
+def test_youtube_support_events_and_timestamps():
+    data = {"continuationContents": {"liveChatContinuation": {"actions": [
+        {"addChatItemAction": {"item": {"giftMessageViewModel": {"id": "g1"}}}},
+        {"addChatItemAction": {"item": {"liveChatPaidMessageRenderer": {
+            "id": "p1", "timestampUsec": "1700000000000000", "authorName": {"simpleText": "bob"},
+            "message": {"runs": [{"text": "gg"}]}}}}},
+    ]}}}
+    items, _, _ = parse_chat_response(data)
+    assert items[0]["text"] == "gifted membership hype" and items[0]["ts"] is None
+    assert items[1] == {"id": "p1", "ts": 1700000000.0, "user": "bob", "text": "gg super chat hype"}
+
+
+def test_youtube_prefers_live_chat_view():
+    html = ('"INNERTUBE_API_KEY":"K","INNERTUBE_CLIENT_VERSION":"2.1",'
+            '"continuations":[{"invalidationContinuationData":{"continuation":"TOPCHAT"}}],'
+            '"subMenuItems":[{"title":"Top chat","selected":true,"continuation":{"reloadContinuationData":{"continuation":"TOP"}}},'
+            '{"title":"Live chat","selected":false,"continuation":{"reloadContinuationData":{"continuation":"LIVE"}}}]')
+    assert extract_chat_config(html)["continuation"] == "LIVE"
 
 
 def test_kick_channel():
