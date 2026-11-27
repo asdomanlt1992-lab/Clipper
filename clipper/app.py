@@ -261,6 +261,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lines = [l for l in body.splitlines() if l.count("\t") >= 6]
         if not lines:
             raise HTTPException(400, "that doesn't look like a cookies.txt (Netscape format) file")
+
+        def domain(line: str) -> str:
+            return line.split("\t")[0].removeprefix("#HttpOnly_").lstrip(".")
+
+        # Merge: a new upload replaces cookies for the sites it contains and keeps the others,
+        # so Twitch and YouTube files can be uploaded one after the other.
+        new_domains = {domain(l) for l in lines}
+        if cookies_path.exists():
+            kept = [l for l in cookies_path.read_text(errors="replace").splitlines()
+                    if l.count("\t") >= 6 and domain(l) not in new_domains]
+            lines = kept + lines
         settings.secrets_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(settings.secrets_dir, 0o700)
         tmp = cookies_path.with_suffix(".tmp")

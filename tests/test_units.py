@@ -57,6 +57,10 @@ def test_cookies_upload_api(tmp_path):
         assert c.put("/api/cookies", content=body).status_code == 204
         info = c.get("/api/cookies").json()
         assert info["present"] and info["sites"] == ["youtube.com", "twitch.tv"]
+        # a second upload for one site replaces that site only
+        assert c.put("/api/cookies", content=".twitch.tv\tTRUE\t/\tTRUE\t0\tauth-token\tz\n").status_code == 204
+        saved = (tmp_path / "secrets" / "cookies.txt").read_text()
+        assert "\tSID\tx" in saved and "auth-token\tz" in saved and "auth-token\ty" not in saved
         assert oct((tmp_path / "secrets" / "cookies.txt").stat().st_mode)[-3:] == "600"
         c.delete("/api/cookies")
         assert not c.get("/api/cookies").json()["present"]

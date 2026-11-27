@@ -265,7 +265,7 @@ async function refreshCookies() {
   if (!c) return;
   $("#cookies").innerHTML = `<div class="url">Some streams only play when you're signed in (YouTube's "confirm you're not a bot",
       sub-only or members-only streams). Export <b>cookies.txt</b> from a browser where you're signed in to YouTube / Twitch
-      (e.g. the "Get cookies.txt LOCALLY" extension) and upload it here. It stays on this computer in data/secrets.</div>
+      (e.g. the "Get cookies.txt LOCALLY" extension) and upload it here. Upload one file per site if you like; they're combined. It stays on this computer in data/secrets.</div>
     <div class="row">${c.present ? `<span class="pill live">signed in: ${esc(c.sites.join(", ") || "unknown sites")}</span>` : `<span class="pill off">not signed in</span>`}
       <label class="ghost" style="cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:8px 10px">Upload cookies.txt
         <input type="file" accept=".txt" style="display:none" onchange="uploadCookies(this.files[0])"></label>
