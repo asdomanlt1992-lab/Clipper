@@ -84,7 +84,7 @@ Every clip is at least `CLIPPER_MIN_CLIP_SECONDS` (31s) long:
 
   | Platform | URL forms | How chat is read |
   |---|---|---|
-  | Twitch | `twitch.tv/<channel>` | Anonymous IRC |
+  | Twitch | `twitch.tv/<channel>` | Anonymous IRC over WebSocket (port 443) |
   | YouTube Live | `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/live/…`, `youtube.com/@name/live` | Polls the internal endpoint the chat popout uses (no API key or quota) |
   | Kick | `kick.com/<channel>` | Kick's public Pusher websocket |
 
@@ -92,6 +92,24 @@ Every clip is at least `CLIPPER_MIN_CLIP_SECONDS` (31s) long:
   Kick's channel lookup is sometimes blocked by Cloudflare. If that happens, set
   `CLIPPER_KICK_CHATROOM_<NAME>=<chatroom id>`. If Kick changes its Pusher key, override it with
   `CLIPPER_KICK_PUSHER_KEY` / `CLIPPER_KICK_PUSHER_CLUSTER`.
+
+## Signed-in video (cookies)
+
+Some streams only play when you're signed in: YouTube sometimes asks to "confirm you're not a
+bot", and sub-only or members-only streams need an account that can watch them. Chat never needs
+this.
+
+1. In a browser where you're signed in to YouTube and/or Twitch, export your cookies as
+   `cookies.txt` (Netscape format), for example with the "Get cookies.txt LOCALLY" extension.
+2. Upload it in the **Signed-in video** box on the page. It's saved to
+   `data/secrets/cookies.txt` (owner-only permissions) and passed to streamlink. For Twitch, the
+   `auth-token` cookie is also sent as the API authorization header.
+3. Streams pick it up on their next reconnect (stop and re-add a stream to apply it right away).
+
+Cookies are as sensitive as a password: anyone with the file can act as your account. Keep it on
+your own machine and remove it when you're done.
+
+`CLIPPER_STREAMLINK_ARGS` passes any extra streamlink options (e.g. `--hls-live-edge 2`).
 
 ## Posting to YouTube and TikTok
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 import shutil
 import time
@@ -12,7 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -239,6 +240,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return HTMLResponse(f"<p>{platform} sign-in failed: {exc}</p><p><a href='/'>Back</a></p>",
                                 status_code=400)
         return RedirectResponse("/?connected=" + platform)
+
+    cookies_path = settings.secrets_dir / "cookies.txt"
+
+    @app.get("/api/cookies")
+    def cookies_status():
+        if not cookies_path.exists():
+            return {"present": False}
+        text = cookies_path.read_text(errors="replace")
+        domains = sorted({line.split("\t")[0].removeprefix("#HttpOnly_").lstrip(".")
+                          for line in text.splitlines() if line.count("\t") >= 6})
+        sites = [s for s in ("youtube.com", "twitch.tv", "kick.com") if any(d.endswith(s) for d in domains)]
+        return {"present": True, "sites": sites, "updated": cookies_path.stat().st_mtime}
+
+    @app.put("/api/cookies", status_code=204)
+    async def upload_cookies(request: Request):
+        body = (await request.body()).decode("utf-8", "replace")
+        if len(body) > 5_000_000:
+            raise HTTPException(413, "file too large")
+        lines = [l for l in body.splitlines() if l.count("\t") >= 6]
+        if not lines:
+            raise HTTPException(400, "that doesn't look like a cookies.txt (Netscape format) file")
+        settings.secrets_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(settings.secrets_dir, 0o700)
+        tmp = cookies_path.with_suffix(".tmp")
+        tmp.write_text("# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
+        os.chmod(tmp, 0o600)
+        tmp.replace(cookies_path)
+
+    @app.delete("/api/cookies", status_code=204)
+    def delete_cookies():
+        cookies_path.unlink(missing_ok=True)
 
     @app.delete("/api/platforms/{platform}", status_code=204)
     def disconnect(platform: str):

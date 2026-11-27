@@ -29,6 +29,7 @@ class Settings:
     segment_seconds: float = field(default_factory=lambda: _env("SEGMENT_SECONDS", 2.0, float))
     buffer_seconds: float = field(default_factory=lambda: _env("BUFFER_SECONDS", 180.0, float))
     default_quality: str = field(default_factory=lambda: _env("QUALITY", "best"))
+    streamlink_args: str = field(default_factory=lambda: _env("STREAMLINK_ARGS", ""))
     reconnect_seconds: float = field(default_factory=lambda: _env("RECONNECT_SECONDS", 30.0, float))
 
     # Clip lengths

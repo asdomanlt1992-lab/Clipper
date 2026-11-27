@@ -89,6 +89,9 @@
   </form>
   <div class="banner" id="banner"></div>
 
+  <h2>Signed-in video</h2>
+  <div class="card" id="cookies"></div>
+
   <h2>Posting</h2>
   <div class="platforms" id="platforms"></div>
 
@@ -257,6 +260,24 @@ async function refreshPlatforms() {
       <span class="pill ${p.active ? "live" : "off"}">${p.active ? "connected" : p.configured ? "not connected" : "not set up"}</span></div>${body}</div>`;
   }).join("");
 }
+async function refreshCookies() {
+  const c = await api("/api/cookies").catch(() => null);
+  if (!c) return;
+  $("#cookies").innerHTML = `<div class="url">Some streams only play when you're signed in (YouTube's "confirm you're not a bot",
+      sub-only or members-only streams). Export <b>cookies.txt</b> from a browser where you're signed in to YouTube / Twitch
+      (e.g. the "Get cookies.txt LOCALLY" extension) and upload it here. It stays on this computer in data/secrets.</div>
+    <div class="row">${c.present ? `<span class="pill live">signed in: ${esc(c.sites.join(", ") || "unknown sites")}</span>` : `<span class="pill off">not signed in</span>`}
+      <label class="ghost" style="cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:8px 10px">Upload cookies.txt
+        <input type="file" accept=".txt" style="display:none" onchange="uploadCookies(this.files[0])"></label>
+      ${c.present ? `<button class="ghost" onclick="deleteCookies()">Remove</button>` : ""}</div>`;
+}
+async function uploadCookies(file) {
+  if (!file) return;
+  try { await api("/api/cookies", { method: "PUT", body: await file.text(), headers: { "Content-Type": "text/plain" } });
+        toast("Signed-in cookies saved. Streams use them on their next reconnect."); refreshCookies(); }
+  catch (e) { toast(e.message); }
+}
+async function deleteCookies() { await api("/api/cookies", { method: "DELETE" }); refreshCookies(); }
 async function postClip(id) { try { await api(`/api/clips/${id}/post`, { method: "POST" }); toast("Queued for posting"); clipSig = ""; refreshClips(); } catch (e) { toast(e.message); } }
 async function disconnectPlatform(k) { if (confirm(`Disconnect ${PNAME[k]}?`)) { await api(`/api/platforms/${k}`, { method: "DELETE" }); refreshPlatforms(); } }
 async function setVerdict(id, verdict) { try { await api(`/api/clips/${id}/verdict`, { method: "POST", body: JSON.stringify({ verdict }) }); clipSig = ""; refreshClips(); } catch (e) { toast(e.message); } }
@@ -269,7 +290,7 @@ async function delClip(id) { await api(`/api/clips/${id}`, { method: "DELETE" })
     <span>Transcription: ${on(cfg.transcribe)}</span><span>Audio: ${on(cfg.audio)}</span>
     <span>Rejects: ${esc(cfg.reject_categories.join(", "))}</span>
     <span>Rejected videos deleted after ${cfg.rejected_keep_hours}h</span>`;
-  await refreshPlatforms(); await refreshStreams(); await refreshClips();
+  await refreshCookies(); await refreshPlatforms(); await refreshStreams(); await refreshClips();
   setInterval(refreshStreams, 2000); setInterval(refreshClips, 2500); setInterval(refreshPlatforms, 15000);
   const connected = new URLSearchParams(location.search).get("connected");
   if (connected) { toast(`${PNAME[connected] || connected} connected`); history.replaceState(null, "", "/"); }

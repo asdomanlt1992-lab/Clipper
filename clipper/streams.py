@@ -53,6 +53,7 @@ class WatchedStream:
         self.recorder = Recorder(
             url, quality, settings.buffer_dir / self.id,
             settings.segment_seconds, settings.buffer_seconds, settings.reconnect_seconds,
+            settings.secrets_dir / "cookies.txt", settings.streamlink_args,
         )
         self.audio = AudioMonitor(self.recorder, settings.hype_baseline)
         self._tasks: list[asyncio.Task] = []

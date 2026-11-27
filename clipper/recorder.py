@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -43,7 +44,21 @@ def select_segments(segs: list[Segment], start: float, end: float) -> list[Segme
     return [s for s in segs if s.end > start and s.start < end]
 
 
-def build_source_cmds(url: str, quality: str) -> tuple[list[str] | None, list[str]]:
+def twitch_auth_token(cookies_file: Path) -> str | None:
+    """The 'auth-token' cookie for twitch.tv from a Netscape cookies.txt, if present."""
+    try:
+        for line in cookies_file.read_text(errors="replace").splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 7 and parts[0].removeprefix("#HttpOnly_").endswith("twitch.tv") \
+                    and parts[5] == "auth-token" and parts[6].strip():
+                return parts[6].strip()
+    except OSError:
+        pass
+    return None
+
+
+def build_source_cmds(url: str, quality: str, cookies_file: Path | None = None,
+                      extra_args: str = "") -> tuple[list[str] | None, list[str]]:
     """Return (streamlink_cmd or None, ffmpeg input args).
 
     Prefixes for testing / non-streamlink sources:
@@ -57,14 +72,25 @@ def build_source_cmds(url: str, quality: str) -> tuple[list[str] | None, list[st
         return None, ["-re", "-i", url[len("direct:"):]]
     streamlink = [
         sys.executable, "-m", "streamlink_cli", "--stdout", "--loglevel", "warning",
-        "--twitch-disable-ads", url, quality,
+        "--twitch-disable-ads",
     ]
+    if cookies_file and cookies_file.exists():
+        # Signed-in session: needed when YouTube asks to "confirm you're not a bot", and for
+        # sub-only / members-only streams.
+        streamlink += ["--http-cookies-file", str(cookies_file)]
+        token = twitch_auth_token(cookies_file)
+        if token and "twitch.tv" in url:
+            streamlink += ["--twitch-api-header", f"Authorization=OAuth {token}"]
+    streamlink += shlex.split(extra_args) + [url, quality]
     return streamlink, ["-i", "pipe:0"]
 
 
 class Recorder:
     def __init__(self, url: str, quality: str, buffer_dir: Path,
-                 segment_seconds: float, buffer_seconds: float, reconnect_seconds: float):
+                 segment_seconds: float, buffer_seconds: float, reconnect_seconds: float,
+                 cookies_file: Path | None = None, extra_args: str = ""):
+        self.cookies_file = cookies_file
+        self.extra_args = extra_args
         self.url = url
         self.quality = quality
         self.buffer_dir = buffer_dir
@@ -127,7 +153,7 @@ class Recorder:
         url = self.url
         if not url.startswith(("lavfi:", "direct:")) and youtube_target(url):
             url = await resolve_watch_url(url)  # channel links: find the live video each time
-        sl_cmd, ff_input = build_source_cmds(url, self.quality)
+        sl_cmd, ff_input = build_source_cmds(url, self.quality, self.cookies_file, self.extra_args)
         # Continue numbering after any existing segments so names stay sorted.
         existing = sorted(self.buffer_dir.glob("seg_*.ts"))
         start_number = int(existing[-1].stem.split("_")[1]) + 1 if existing else 0
