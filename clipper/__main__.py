@@ -9,7 +9,7 @@ from .config import Settings
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = Settings()
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, access_log=False)
 
 
 if __name__ == "__main__":
